@@ -46,6 +46,8 @@ type AllocationIP struct {
 	//
 	// +optional
 	Resource string `json:"resource,omitempty"`
+
+	Pool string `json:"pool,omitempty"`
 }
 
 // AllocationMap is a map of allocated IPs indexed by IP
@@ -117,6 +119,8 @@ type IPAMSpec struct {
 	// +optional
 	Pools IPAMPoolSpec `json:"pools,omitempty"`
 
+	CrdPools map[string]AllocationMap `json:"crd-pools,omitempty"`
+
 	// PodCIDRs is the list of CIDRs available to the node for allocation.
 	// When an IP is used, the IP will be added to Status.IPAM.Used
 	//
@@ -176,6 +180,8 @@ type IPAMSpec struct {
 	//
 	// +kubebuilder:validation:Minimum=0
 	PodCIDRReleaseThreshold int `json:"pod-cidr-release-threshold,omitempty"`
+
+	EnableMultiPool bool `json:"enable-multi-pool,omitempty"`
 }
 
 // IPReleaseStatus  defines the valid states in IP release handshake
@@ -192,6 +198,9 @@ type IPAMStatus struct {
 	//
 	// +optional
 	Used AllocationMap `json:"used,omitempty"`
+
+	// +optional
+	PoolUsed map[string]AllocationMap `json:"pool-used,omitempty"`
 
 	// PodCIDRs lists the status of each pod CIDR allocated to this node.
 	//

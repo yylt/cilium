@@ -72,6 +72,16 @@ type Node struct {
 	instanceID string
 }
 
+func (n *Node) ResyncInterfacesAndIPsByPool(ctx context.Context, scopedLog *logrus.Entry) (poolAvailable map[ipam.Pool]ipamTypes.AllocationMap, stats stats.InterfaceStats, err error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (n *Node) GetPoolUsedIPWithPrefixes(pool string) int {
+	//TODO implement me
+	panic("implement me")
+}
+
 // NewNode returns a new Node
 func NewNode(node *ipam.Node, k8sObj *v2.CiliumNode, manager *InstancesManager) *Node {
 	return &Node{

@@ -82,6 +82,10 @@ spec:
                 - cidrs
                 - maskSize
                 type: object
+              subnet-id:
+                type: string
+            required:
+            - subnet-id
             type: object
         required:
         - spec

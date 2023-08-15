@@ -47,6 +47,16 @@ type InstancesManager struct {
 	api            EC2API
 }
 
+func (m *InstancesManager) ExcludeIP(ip string) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (m *InstancesManager) IncludeIP(ip string) {
+	//TODO implement me
+	panic("implement me")
+}
+
 // NewInstancesManager returns a new instances manager
 func NewInstancesManager(api EC2API) *InstancesManager {
 	return &InstancesManager{

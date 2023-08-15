@@ -142,6 +142,13 @@ func (p Pool) String() string {
 	return string(p)
 }
 
+func (p Pool) SubnetId() string {
+	if pool := k8sManager.nodeManager.pools[p.String()]; pool != nil {
+		return pool.Spec.SubnetId
+	}
+	return ""
+}
+
 const (
 	PoolDefault Pool = ipamOption.PoolDefault
 )

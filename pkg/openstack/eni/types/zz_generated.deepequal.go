@@ -86,6 +86,10 @@ func (in *ENI) DeepEqual(other *ENI) bool {
 		}
 	}
 
+	if in.Pool != other.Pool {
+		return false
+	}
+
 	return true
 }
 

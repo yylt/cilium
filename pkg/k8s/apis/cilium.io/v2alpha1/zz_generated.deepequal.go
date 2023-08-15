@@ -473,6 +473,10 @@ func (in *IPPoolSpec) DeepEqual(other *IPPoolSpec) bool {
 		}
 	}
 
+	if in.SubnetId != other.SubnetId {
+		return false
+	}
+
 	return true
 }
 

@@ -139,6 +139,23 @@ func (in *IPAMSpec) DeepCopyInto(out *IPAMSpec) {
 		}
 	}
 	in.Pools.DeepCopyInto(&out.Pools)
+	if in.CrdPools != nil {
+		in, out := &in.CrdPools, &out.CrdPools
+		*out = make(map[string]AllocationMap, len(*in))
+		for key, val := range *in {
+			var outVal map[string]AllocationIP
+			if val == nil {
+				(*out)[key] = nil
+			} else {
+				in, out := &val, &outVal
+				*out = make(AllocationMap, len(*in))
+				for key, val := range *in {
+					(*out)[key] = val
+				}
+			}
+			(*out)[key] = outVal
+		}
+	}
 	if in.PodCIDRs != nil {
 		in, out := &in.PodCIDRs, &out.PodCIDRs
 		*out = make([]string, len(*in))
@@ -165,6 +182,23 @@ func (in *IPAMStatus) DeepCopyInto(out *IPAMStatus) {
 		*out = make(AllocationMap, len(*in))
 		for key, val := range *in {
 			(*out)[key] = val
+		}
+	}
+	if in.PoolUsed != nil {
+		in, out := &in.PoolUsed, &out.PoolUsed
+		*out = make(map[string]AllocationMap, len(*in))
+		for key, val := range *in {
+			var outVal map[string]AllocationIP
+			if val == nil {
+				(*out)[key] = nil
+			} else {
+				in, out := &val, &outVal
+				*out = make(AllocationMap, len(*in))
+				for key, val := range *in {
+					(*out)[key] = val
+				}
+			}
+			(*out)[key] = outVal
 		}
 	}
 	if in.PodCIDRs != nil {

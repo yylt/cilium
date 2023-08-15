@@ -21,6 +21,9 @@ func (in *AllocationIP) DeepEqual(other *AllocationIP) bool {
 	if in.Resource != other.Resource {
 		return false
 	}
+	if in.Pool != other.Pool {
+		return false
+	}
 
 	return true
 }
@@ -175,6 +178,27 @@ func (in *IPAMSpec) DeepEqual(other *IPAMSpec) bool {
 		return false
 	}
 
+	if ((in.CrdPools != nil) && (other.CrdPools != nil)) || ((in.CrdPools == nil) != (other.CrdPools == nil)) {
+		in, other := &in.CrdPools, &other.CrdPools
+		if other == nil {
+			return false
+		}
+
+		if len(*in) != len(*other) {
+			return false
+		} else {
+			for key, inValue := range *in {
+				if otherValue, present := (*other)[key]; !present {
+					return false
+				} else {
+					if !inValue.DeepEqual(&otherValue) {
+						return false
+					}
+				}
+			}
+		}
+	}
+
 	if ((in.PodCIDRs != nil) && (other.PodCIDRs != nil)) || ((in.PodCIDRs == nil) != (other.PodCIDRs == nil)) {
 		in, other := &in.PodCIDRs, &other.PodCIDRs
 		if other == nil {
@@ -210,6 +234,9 @@ func (in *IPAMSpec) DeepEqual(other *IPAMSpec) bool {
 	if in.PodCIDRReleaseThreshold != other.PodCIDRReleaseThreshold {
 		return false
 	}
+	if in.EnableMultiPool != other.EnableMultiPool {
+		return false
+	}
 
 	return true
 }
@@ -225,6 +252,27 @@ func (in *IPAMStatus) DeepEqual(other *IPAMStatus) bool {
 		in, other := &in.Used, &other.Used
 		if other == nil || !in.DeepEqual(other) {
 			return false
+		}
+	}
+
+	if ((in.PoolUsed != nil) && (other.PoolUsed != nil)) || ((in.PoolUsed == nil) != (other.PoolUsed == nil)) {
+		in, other := &in.PoolUsed, &other.PoolUsed
+		if other == nil {
+			return false
+		}
+
+		if len(*in) != len(*other) {
+			return false
+		} else {
+			for key, inValue := range *in {
+				if otherValue, present := (*other)[key]; !present {
+					return false
+				} else {
+					if !inValue.DeepEqual(&otherValue) {
+						return false
+					}
+				}
+			}
 		}
 	}
 

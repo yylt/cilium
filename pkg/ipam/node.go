@@ -72,6 +72,8 @@ type Node struct {
 	// stats provides accounting for various per node statistics
 	stats Statistics
 
+	poolStats map[Pool]*Statistics
+
 	// lastMaxAdapterWarning is the timestamp when the last warning was
 	// printed that this node is out of adapters
 	lastMaxAdapterWarning time.Time
@@ -98,6 +100,8 @@ type Node struct {
 
 	// available is the map of IPs available to this node
 	available ipamTypes.AllocationMap
+
+	poolAvailable map[Pool]ipamTypes.AllocationMap
 
 	// manager is the NodeManager responsible for this node
 	manager *NodeManager
@@ -134,6 +138,8 @@ type Node struct {
 
 	// logLimiter rate limits potentially repeating warning logs
 	logLimiter logging.Limiter
+
+	pools map[Pool]pool
 }
 
 // Statistics represent the IP allocation statistics of a node
@@ -394,8 +400,17 @@ func (n *Node) UpdatedResource(resource *v2.CiliumNode) bool {
 
 	n.ops.UpdatedNode(resource)
 
-	n.recalculate()
-	allocationNeeded := n.allocationNeeded()
+	n.recalculateV2()
+
+	allocationNeeded := false
+
+	for _, pool := range n.pools {
+		if pool.allocationNeeded() {
+			allocationNeeded = true
+			pool.requirePoolMaintenance()
+		}
+	}
+
 	if allocationNeeded {
 		n.requirePoolMaintenance()
 		n.poolMaintainer.Trigger()
@@ -501,7 +516,7 @@ func (n *Node) ResourceCopy() *v2.CiliumNode {
 // attaches it to the instance as specified by the CiliumNode. neededAddresses
 // of secondary IPs are assigned to the interface up to the maximum number of
 // addresses as allowed by the instance.
-func (n *Node) createInterface(ctx context.Context, a *AllocationAction) (created bool, err error) {
+func (n *Node) createInterface(ctx context.Context, a *AllocationAction, pool Pool) (created bool, err error) {
 	if a.EmptyInterfaceSlots == 0 {
 		// This is not a failure scenario, warn once per hour but do
 		// not track as interface allocation failure. There is a
@@ -517,7 +532,7 @@ func (n *Node) createInterface(ctx context.Context, a *AllocationAction) (create
 
 	scopedLog := n.logger()
 	start := time.Now()
-	toAllocate, errCondition, err := n.ops.CreateInterface(ctx, a, scopedLog)
+	toAllocate, errCondition, err := n.ops.CreateInterface(ctx, a, scopedLog, pool)
 	if err != nil {
 		n.manager.metricsAPI.AllocationAttempt(createInterfaceAndAllocateIP, errCondition, string(a.PoolID), metrics.SinceInSeconds(start))
 		scopedLog.Warningf("Unable to create interface on instance: %s", err)
@@ -612,7 +627,7 @@ func (n *Node) determineMaintenanceAction() (*maintenanceAction, error) {
 	// Validate that the node still requires addresses to be released, the
 	// request may have been resolved in the meantime.
 	if n.manager.releaseExcessIPs && stats.ExcessIPs > 0 {
-		a.release = n.ops.PrepareIPRelease(stats.ExcessIPs, scopedLog)
+		a.release = n.ops.PrepareIPRelease(stats.ExcessIPs, scopedLog, "")
 		return a, nil
 	}
 
@@ -622,7 +637,7 @@ func (n *Node) determineMaintenanceAction() (*maintenanceAction, error) {
 		return nil, nil
 	}
 
-	a.allocation, err = n.ops.PrepareIPAllocation(scopedLog)
+	a.allocation, err = n.ops.PrepareIPAllocation(scopedLog, "")
 	if err != nil {
 		return nil, err
 	}
@@ -869,7 +884,7 @@ func (n *Node) handleIPAllocation(ctx context.Context, a *maintenanceAction) (in
 		a.allocation.AvailableForAllocation = math.IntMin(a.allocation.AvailableForAllocation, a.allocation.MaxIPsToAllocate)
 
 		start := time.Now()
-		err := n.ops.AllocateIPs(ctx, a.allocation)
+		err := n.ops.AllocateIPs(ctx, a.allocation, "")
 		if err == nil {
 			n.manager.metricsAPI.AllocationAttempt(allocateIP, success, string(a.allocation.PoolID), metrics.SinceInSeconds(start))
 			n.manager.metricsAPI.AddIPAllocation(string(a.allocation.PoolID), int64(a.allocation.AvailableForAllocation))
@@ -883,7 +898,7 @@ func (n *Node) handleIPAllocation(ctx context.Context, a *maintenanceAction) (in
 		}).WithError(err).Warning("Unable to assign additional IPs to interface, will create new interface")
 	}
 
-	return n.createInterface(ctx, a.allocation)
+	return n.createInterface(ctx, a.allocation, "")
 }
 
 // maintainIPPool attempts to allocate or release all required IPs to fulfill the needed gap.
@@ -1034,7 +1049,9 @@ func (n *Node) syncToAPIServer() (err error) {
 	// handshake, where the agent will never use any IP where it has
 	// acknowledged the release handshake. Therefore, having an already
 	// released IP in the pool is fine, as the agent will ignore it.
-	pool := n.Pool()
+
+	// pool := n.Pool()
+	pool := n.CrdPools()
 
 	// Always update the status first to ensure that the IPAM information
 	// is synced for all addresses that are marked as available.
@@ -1062,8 +1079,8 @@ func (n *Node) syncToAPIServer() (err error) {
 	}
 
 	for retry := 0; retry < 2; retry++ {
-		node.Spec.IPAM.Pool = pool
-		scopedLog.WithField("poolSize", len(node.Spec.IPAM.Pool)).Debug("Updating node in apiserver")
+		node.Spec.IPAM.CrdPools = pool
+		scopedLog.WithField("poolSize", len(node.Spec.IPAM.CrdPools)).Debug("Updating node in apiserver")
 
 		// The PreAllocate value is added here rather than where the CiliumNode
 		// resource is created ((*NodeDiscovery).mutateNodeResource() inside

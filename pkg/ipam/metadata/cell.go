@@ -31,15 +31,13 @@ type managerParams struct {
 }
 
 func newIPAMMetadataManager(params managerParams) *Manager {
-	if params.DaemonConfig.IPAM != ipamOption.IPAMMultiPool {
-		return nil
+	if params.DaemonConfig.IPAM == ipamOption.IPAMMultiPool || params.DaemonConfig.IPAM == ipamOption.IPAMOpenStack {
+		manager := &Manager{
+			namespaceResource: params.NamespaceResource,
+			podResource:       params.PodResource,
+		}
+		params.Lifecycle.Append(manager)
+		return manager
 	}
-
-	manager := &Manager{
-		namespaceResource: params.NamespaceResource,
-		podResource:       params.PodResource,
-	}
-	params.Lifecycle.Append(manager)
-
-	return manager
+	return nil
 }

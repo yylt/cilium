@@ -251,7 +251,7 @@ CRDS_CILIUM_V2ALPHA1 := ciliumendpointslices \
                         ciliumnodeconfigs \
                         ciliumcidrgroups \
                         ciliuml2announcementpolicies \
-                        ciliumpodippools
+                        ciliumpodippools \
 
 manifests: ## Generate K8s manifests e.g. CRD, RBAC etc.
 	$(eval TMPDIR := $(shell mktemp -d -t cilium.tmpXXXXXXXX))
