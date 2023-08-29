@@ -35,7 +35,11 @@ type IPPoolSpec struct {
 	// +kubebuilder:validation:Optional
 	IPv6 *IPv6PoolSpec `json:"ipv6"`
 
+	// +kubebuilder:validation:Required
 	SubnetId string `json:"subnet-id"`
+
+	// +kubebuilder:validation:Required
+	CIDR string `json:"cidr"`
 }
 
 type IPv4PoolSpec struct {

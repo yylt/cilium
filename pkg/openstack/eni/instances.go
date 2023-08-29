@@ -30,6 +30,9 @@ type OpenStackAPI interface {
 	AssignPrivateIPAddresses(ctx context.Context, eniID string, toAllocate int) ([]string, error)
 	UnassignPrivateIPAddresses(ctx context.Context, eniID string, addresses []string) error
 	AddTagToNetworkInterface(ctx context.Context, eniID string, tags string) error
+	UnassignPrivateIPAddressesRetainPort(ctx context.Context, eniID string, address []string) error
+	AssignStaticPrivateIPAddresses(ctx context.Context, eniID string, address string) error
+	DeleteNeutronPort(address string, networkID string) error
 }
 
 // InstancesManager maintains the list of instances. It must be kept up to date
@@ -41,13 +44,15 @@ type InstancesManager struct {
 	vpcs           ipamTypes.VirtualNetworkMap
 	securityGroups types.SecurityGroupMap
 	api            OpenStackAPI
+	excludeIPs     map[string]struct{}
 }
 
 // NewInstancesManager returns a new instances manager
 func NewInstancesManager(api OpenStackAPI) *InstancesManager {
 	return &InstancesManager{
-		instances: ipamTypes.NewInstanceMap(),
-		api:       api,
+		instances:  ipamTypes.NewInstanceMap(),
+		api:        api,
+		excludeIPs: map[string]struct{}{},
 	}
 }
 
@@ -212,4 +217,16 @@ func (m *InstancesManager) DeleteInstance(instanceID string) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	m.instances.Delete(instanceID)
+}
+
+func (m *InstancesManager) ExcludeIP(ip string) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.excludeIPs[ip] = struct{}{}
+}
+
+func (m *InstancesManager) IncludeIP(ip string) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	delete(m.excludeIPs, ip)
 }

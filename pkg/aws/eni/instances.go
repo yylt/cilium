@@ -47,16 +47,6 @@ type InstancesManager struct {
 	api            EC2API
 }
 
-func (m *InstancesManager) ExcludeIP(ip string) {
-	//TODO implement me
-	panic("implement me")
-}
-
-func (m *InstancesManager) IncludeIP(ip string) {
-	//TODO implement me
-	panic("implement me")
-}
-
 // NewInstancesManager returns a new instances manager
 func NewInstancesManager(api EC2API) *InstancesManager {
 	return &InstancesManager{
@@ -255,4 +245,12 @@ func (m *InstancesManager) DeleteInstance(instanceID string) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	m.instances.Delete(instanceID)
+}
+
+func (m *InstancesManager) ExcludeIP(ip string) {
+	log.Errorf("ExcludeIP function for AWS ENI is not supported.")
+}
+
+func (m *InstancesManager) IncludeIP(ip string) {
+	log.Errorf("IncludeIP function for AWS ENI is not supported.")
 }

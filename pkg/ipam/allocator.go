@@ -4,8 +4,15 @@
 package ipam
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
+	v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
+	nodeTypes "github.com/cilium/cilium/pkg/node/types"
+	k8sErr "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"net"
 	"strings"
 	"time"
@@ -74,8 +81,13 @@ func (ipam *IPAM) allocateIP(ip net.IP, owner string, pool Pool, needSyncUpstrea
 	}
 
 	if ownedBy, ok := ipam.isIPExcluded(ip, pool); ok {
-		err = fmt.Errorf("IP %s is excluded, owned by %s", ip, ownedBy)
-		return
+
+		if ownedBy != owner {
+			if ownedBy+" [restored]" != owner {
+				err = fmt.Errorf("IP %s is excluded, owned by %s", ip, ownedBy)
+				return
+			}
+		}
 	}
 
 	family := IPv4
@@ -154,6 +166,125 @@ func (ipam *IPAM) allocateNextFamily(family Family, owner string, pool Pool, nee
 		}
 	}
 
+	var policy string
+	var recycleTime int
+	var ipCrd *v2alpha1.CiliumStaticIP
+	if policy, recycleTime, err = ipam.determineIPPolicy(owner); err == nil {
+		if policy == "true" {
+			if namespace, name, ok := splitK8sPodName(owner); ok {
+				ipCrd, err = ipam.staticIPManager.StaticIPInterface.CiliumStaticIPs(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+				if err != nil && !k8sErr.IsNotFound(err) {
+					return
+				} else if k8sErr.IsNotFound(err) {
+					ipCrd = &v2alpha1.CiliumStaticIP{
+						TypeMeta: metav1.TypeMeta{
+							APIVersion: v2alpha1.CiliumStaticIPAPIVersion,
+							Kind:       v2alpha1.CiliumStaticIPKind,
+						},
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      name,
+							Namespace: namespace,
+						},
+						Spec: v2alpha1.StaticIPSpec{
+							Pool:        string(pool),
+							NodeName:    nodeTypes.GetName(),
+							RecycleTime: recycleTime,
+						},
+						Status: v2alpha1.StaticIPStatus{},
+					}
+				} else {
+					ipCopy := ipCrd.DeepCopy()
+					now := time.Now()
+					switch ipCopy.Status.IPStatus {
+					case v2alpha1.WaitingForAssign:
+						err = fmt.Errorf("cilium static ip crd is not ready, still waiting for next assign")
+						return
+					case v2alpha1.Unbind:
+						ipCopy.Status.IPStatus = v2alpha1.WaitingForAssign
+						ipCopy.Status.UpdateTime = v1.Time{
+							Time: now,
+						}
+						ipCopy.Spec.NodeName = nodeTypes.GetName()
+						err = ipam.staticIPManager.UpdateStaticIPStatus(ipCopy)
+						return
+					case v2alpha1.Assigned:
+						updateTime := ipCopy.Status.UpdateTime.Time
+						if !now.Before(updateTime.Add(defaultAssignTimeOut).Add(time.Second * -5)) {
+							return
+						}
+						ip := net.ParseIP(ipCopy.Spec.IP)
+						result, err = ipam.allocateIPWithoutLock(ip, owner, pool, true)
+						if err != nil {
+							if now.Sub(updateTime) > time.Second*60 {
+								ipCopy.Status.IPStatus = v2alpha1.Idle
+								ipCopy.Status.UpdateTime = v1.Time{
+									Time: now,
+								}
+								err = ipam.staticIPManager.UpdateStaticIPStatus(ipCopy)
+							}
+							return
+						}
+						ipCopy.Status.IPStatus = v2alpha1.InUse
+						ipCopy.Status.UpdateTime = v1.Time{
+							Time: now,
+						}
+						err = ipam.staticIPManager.UpdateStaticIPStatus(ipCopy)
+						if err != nil {
+							return
+						}
+						log.Infof("assigned static ip: %s for pod: %s success.", ip, owner)
+						return
+					case v2alpha1.InUse:
+						ip := net.ParseIP(ipCopy.Spec.IP)
+						if ipam.getIPOwner(ipCopy.Spec.IP, pool) == owner && ipCopy.Spec.NodeName == nodeTypes.GetName() {
+							ipCopy.Status.IPStatus = v2alpha1.InUse
+							ipCopy.Spec.NodeName = nodeTypes.GetName()
+							ipCopy.Status.UpdateTime = v1.Time{
+								Time: now,
+							}
+							err = ipam.staticIPManager.UpdateStaticIPStatus(ipCopy)
+							if err != nil {
+								goto reAllocate
+							}
+							result, err = ipam.allocateIPWithoutLock(ip, owner, pool, true)
+							if err == nil {
+								return result, err
+							}
+						}
+					reAllocate:
+						ipCopy.Status.IPStatus = v2alpha1.Idle
+						ipCopy.Spec.NodeName = nodeTypes.GetName()
+						ipCopy.Status.UpdateTime = v1.Time{
+							Time: now,
+						}
+						err = ipam.staticIPManager.UpdateStaticIPStatus(ipCopy)
+						return
+					default:
+						log.Errorf("unknown status")
+						return
+					}
+				}
+			}
+		}
+	} else {
+		return
+	}
+
+	defer func(csip *v2alpha1.CiliumStaticIP) {
+		if policy == "true" && csip != nil && result != nil {
+			if csip.Status.IPStatus == v2alpha1.InUse {
+				return
+			}
+			ipCopy := csip.DeepCopy()
+			ipCopy.Status.IPStatus = v2alpha1.InUse
+			ipCopy.Spec.IP = result.IP.String()
+			err1 := ipam.staticIPManager.CreateStaticIP(ipCopy)
+			if err1 != nil {
+				log.Errorf("create csip: %s failed %s", owner, err1)
+			}
+		}
+	}(ipCrd)
+
 	for {
 		if needSyncUpstream {
 			result, err = allocator.AllocateNext(owner, pool)
@@ -170,7 +301,7 @@ func (ipam *IPAM) allocateNextFamily(family Family, owner string, pool Pool, nee
 			result.IPPoolName = PoolDefault
 		}
 
-		if _, ok := ipam.isIPExcluded(result.IP, pool); !ok {
+		if ownedBy, ok := ipam.isIPExcluded(result.IP, pool); !ok || ownedBy == owner {
 			log.WithFields(logrus.Fields{
 				"ip":    result.IP.String(),
 				"pool":  result.IPPoolName,
@@ -292,6 +423,35 @@ func (ipam *IPAM) releaseIPLocked(ip net.IP, pool Pool) error {
 	}).Debugf("Released IP")
 	delete(ipam.expirationTimers, ip.String())
 
+	if strings.Contains(owner, " [restored]") {
+		owner = owner[:strings.Index(owner, " [restored")]
+	}
+	if policy, _, err := ipam.determineIPPolicy(owner); err == nil {
+		if policy == "true" {
+			if namespace, name, ok := splitK8sPodName(owner); ok {
+				ipCrd, err := ipam.staticIPManager.StaticIPInterface.CiliumStaticIPs(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+				if err != nil {
+					if k8sErr.IsNotFound(err) {
+						return nil
+					}
+					log.Infof("get csip: %s failed, error is: %s", owner, err)
+					return err
+				}
+				if ipCrd != nil {
+					ipCopy := ipCrd.DeepCopy()
+					ipCopy.Status.IPStatus = v2alpha1.Idle
+					ipCopy.Status.UpdateTime = v1.Time{
+						Time: time.Now(),
+					}
+					err = ipam.staticIPManager.UpdateStaticIPStatus(ipCopy)
+					if err != nil {
+						log.Infof("update csip: %s failed, error is: %s.", owner, err)
+					}
+				}
+			}
+		}
+	}
+
 	metrics.IpamEvent.WithLabelValues(metricRelease, string(family)).Inc()
 	return nil
 }
@@ -410,4 +570,95 @@ func (ipam *IPAM) StopExpirationTimer(ip net.IP, pool Pool, allocationUUID strin
 	delete(ipam.expirationTimers, ipString)
 
 	return nil
+}
+
+func (ipam *IPAM) determineIPPolicy(owner string) (string, int, error) {
+	if ipam.metadata == nil {
+		return "", 0, nil
+	}
+	if splits := strings.Split(owner, " "); len(splits) > 1 {
+		owner = splits[0]
+	}
+
+	policy, time, err := ipam.metadata.GetIPPolicyForPod(owner)
+	log.Infof("@@@@ %v", policy)
+	log.Infof("@@@@ %v", policy == "true")
+	if err != nil {
+		return "", 0, fmt.Errorf("unable to determine IP policy for owner %q: %w", owner, err)
+	}
+
+	return policy, time, nil
+}
+
+func (ipam *IPAM) allocateIPWithoutLock(ip net.IP, owner string, pool Pool, needSyncUpstream bool) (result *AllocationResult, err error) {
+	if pool == "" {
+		return nil, fmt.Errorf("unable to restore IP %s for %q: pool name must be provided", ip, owner)
+	}
+	if ownedBy, ok := ipam.isIPExcluded(ip, pool); ok && ownedBy != owner {
+		err = fmt.Errorf("IP %s is excluded, owned by %s", ip, ownedBy)
+		return
+	}
+
+	family := IPv4
+	if ip.To4() != nil {
+		if ipam.IPv4Allocator == nil {
+			err = ErrIPv4Disabled
+			return
+		}
+		if needSyncUpstream {
+			if result, err = ipam.IPv4Allocator.Allocate(ip, owner, pool); err != nil {
+				return
+			}
+		} else {
+			if result, err = ipam.IPv4Allocator.AllocateWithoutSyncUpstream(ip, owner, pool); err != nil {
+				return
+			}
+		}
+	} else {
+		family = IPv6
+		if ipam.IPv6Allocator == nil {
+			err = ErrIPv6Disabled
+			return
+		}
+
+		if needSyncUpstream {
+			if result, err = ipam.IPv6Allocator.Allocate(ip, owner, pool); err != nil {
+				return
+			}
+		} else {
+			if result, err = ipam.IPv6Allocator.AllocateWithoutSyncUpstream(ip, owner, pool); err != nil {
+				return
+			}
+		}
+	}
+
+	// If the allocator did not populate the pool, we assume it does not
+	// support IPAM pools and assign the default pool instead
+	if result.IPPoolName == "" {
+		result.IPPoolName = PoolDefault
+	}
+
+	log.WithFields(logrus.Fields{
+		"ip":    ip.String(),
+		"owner": owner,
+		"pool":  result.IPPoolName,
+	}).Debugf("Allocated specific IP")
+
+	ipam.registerIPOwner(ip, owner, pool)
+	metrics.IpamEvent.WithLabelValues(metricAllocate, string(family)).Inc()
+	return
+}
+
+func splitK8sPodName(owner string) (namespace, name string, ok bool) {
+	// Require namespace/name format
+	namespace, name, ok = strings.Cut(owner, "/")
+	if !ok {
+		return "", "", false
+	}
+	// Check if components are a valid namespace name and pod name
+	if validation.IsDNS1123Subdomain(namespace) != nil ||
+		validation.IsDNS1123Subdomain(name) != nil {
+		return "", "", false
+	}
+	return namespace, name, true
 }

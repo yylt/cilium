@@ -173,6 +173,17 @@ func EndpointsResource(lc hive.Lifecycle, cs client.Clientset) (resource.Resourc
 	), nil
 }
 
+func CiliumStaticIPResource(lc hive.Lifecycle, cs client.Clientset, opts ...func(*metav1.ListOptions)) (resource.Resource[*cilium_api_v2alpha1.CiliumStaticIP], error) {
+	if !cs.IsEnabled() {
+		return nil, nil
+	}
+	lw := utils.ListerWatcherWithModifiers(
+		utils.ListerWatcherFromTyped[*cilium_api_v2alpha1.CiliumStaticIPList](cs.CiliumV2alpha1().CiliumStaticIPs("")),
+		opts...,
+	)
+	return resource.New[*cilium_api_v2alpha1.CiliumStaticIP](lc, lw, resource.WithMetric("CiliumStaticIP")), nil
+}
+
 // endpointsListerWatcher implements List and Watch for endpoints/endpointslices. It
 // performs the capability check on first call to List/Watch. This allows constructing
 // the resource before the client has been started and capabilities have been probed.

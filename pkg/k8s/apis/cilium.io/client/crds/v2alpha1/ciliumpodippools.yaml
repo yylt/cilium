@@ -40,6 +40,8 @@ spec:
             type: object
           spec:
             properties:
+              cidr:
+                type: string
               ipv4:
                 description: IPv4 specifies the IPv4 CIDRs and mask sizes of the pool
                 properties:
@@ -85,6 +87,7 @@ spec:
               subnet-id:
                 type: string
             required:
+            - cidr
             - subnet-id
             type: object
         required:

@@ -4,6 +4,7 @@
 package ipam
 
 import (
+	"github.com/cilium/cilium/pkg/ipam/staticip"
 	"net"
 
 	"github.com/davecgh/go-spew/spew"
@@ -104,6 +105,8 @@ type IPAM struct {
 	// excludedIPS contains excluded IPs and their respective owners per pool. The key is a
 	// combination pool:ip to avoid having to maintain a map of maps.
 	excludedIPs map[string]string
+
+	staticIPManager *staticip.Manager
 }
 
 // DebugStatus implements debug.StatusObject to provide debug status collection

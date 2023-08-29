@@ -1,0 +1,96 @@
+
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.11.4
+  creationTimestamp: null
+  name: ciliumstaticips.cilium.io
+spec:
+  group: cilium.io
+  names:
+    categories:
+    - cilium
+    kind: CiliumStaticIP
+    listKind: CiliumStaticIPList
+    plural: ciliumstaticips
+    shortNames:
+    - csip
+    singular: ciliumstaticip
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: Cilium static IP for this node
+      jsonPath: .spec.ip
+      name: CiliumStaticIP
+      type: string
+    - description: Node for csip
+      jsonPath: .spec.node-name
+      name: Node
+      type: string
+    - description: IP status of the csip
+      jsonPath: .status.ip-status
+      name: Status
+      type: string
+    - description: Time duration since creation of Ciliumnode
+      jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v2alpha1
+    schema:
+      openAPIV3Schema:
+        description: CiliumStaticIP defines
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              ip:
+                type: string
+              node-name:
+                type: string
+              pool:
+                type: string
+              recycle-time:
+                type: integer
+            required:
+            - ip
+            - pool
+            type: object
+          status:
+            properties:
+              ip-status:
+                type: string
+              phase:
+                type: string
+              update-time:
+                description: Time is a wrapper around time.Time which supports correct
+                  marshaling to YAML and JSON.  Wrappers are provided for many of
+                  the factory methods that the time package offers.
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        - status
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: []
+  storedVersions: []

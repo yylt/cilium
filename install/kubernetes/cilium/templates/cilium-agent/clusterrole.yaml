@@ -96,6 +96,7 @@ rules:
   - ciliumcidrgroups
   - ciliuml2announcementpolicies
   - ciliumpodippools
+  - ciliumstaticips
   verbs:
   - list
   - watch
@@ -105,6 +106,7 @@ rules:
   - ciliumidentities
   - ciliumendpoints
   - ciliumnodes
+  - ciliumstaticips
   verbs:
   - create
 - apiGroups:
@@ -112,12 +114,14 @@ rules:
   # To synchronize garbage collection of such resources
   resources:
   - ciliumidentities
+  - ciliumstaticips
   verbs:
   - update
 - apiGroups:
   - cilium.io
   resources:
   - ciliumendpoints
+  - ciliumstaticips
   verbs:
   - delete
   - get

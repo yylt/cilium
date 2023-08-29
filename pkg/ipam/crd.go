@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/cilium/cilium/pkg/ipam/staticip"
 	"net"
 	"reflect"
 	"strconv"
@@ -48,6 +49,7 @@ const (
 	fieldName = "name"
 
 	customPool = "ipam.cilium.io/ip-pool"
+	ipRecycle  = "eaystack.io/vpc-ip-claim-delete-policy"
 )
 
 // nodeStore represents a CiliumNode custom resource and binds the CR to a list
@@ -80,6 +82,8 @@ type nodeStore struct {
 	mtuConfig MtuConfiguration
 
 	ipsToPool map[string]string
+
+	csipMgr *staticip.Manager
 }
 
 // newNodeStore initializes a new store which reflects the CiliumNode custom
@@ -95,6 +99,11 @@ func newNodeStore(nodeName string, conf Configuration, owner Owner, clientset cl
 		clientset:          clientset,
 		ipsToPool:          map[string]string{},
 	}
+
+	if csipMgr != nil {
+		store.csipMgr = csipMgr
+	}
+
 	store.restoreFinished = make(chan struct{})
 
 	t, err := trigger.NewTrigger(trigger.Parameters{
@@ -665,6 +674,14 @@ func (n *nodeStore) allocateNext(poolAllocated map[string]ipamTypes.AllocationMa
 				continue
 			}
 
+			if n.csipMgr != nil {
+				if ownerBy, isCsip := n.csipMgr.IsCSIPAddress(ip); isCsip {
+					if ownerBy != owner {
+						continue
+					}
+				}
+			}
+
 			if DeriveFamily(parsedIP) != family {
 				continue
 			}
@@ -709,9 +726,9 @@ type crdAllocator struct {
 }
 
 // newCRDAllocator creates a new CRD-backed IP allocator
-func newCRDAllocator(family Family, c Configuration, owner Owner, clientset client.Clientset, k8sEventReg K8sEventRegister, mtuConfig MtuConfiguration) Allocator {
+func newCRDAllocator(family Family, c Configuration, owner Owner, clientset client.Clientset, k8sEventReg K8sEventRegister, mtuConfig MtuConfiguration, csipMgr *staticip.Manager) Allocator {
 	initNodeStore.Do(func() {
-		sharedNodeStore = newNodeStore(nodeTypes.GetName(), c, owner, clientset, k8sEventReg, mtuConfig)
+		sharedNodeStore = newNodeStore(nodeTypes.GetName(), c, owner, clientset, k8sEventReg, mtuConfig, csipMgr)
 	})
 
 	allocator := &crdAllocator{
@@ -833,6 +850,7 @@ func (a *crdAllocator) buildAllocationResult(ip net.IP, ipInfo *ipamTypes.Alloca
 					result.GatewayIP = deriveGatewayIP(eni.Subnet.CIDR, 1)
 				}
 				result.InterfaceNumber = strconv.Itoa(openStack.GetENIIndexFromTags(eni.Tags))
+				result.IPPoolName = Pool(ipInfo.Pool)
 				return
 			}
 		}

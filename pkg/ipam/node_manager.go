@@ -10,6 +10,7 @@ import (
 	"fmt"
 	cilium_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -105,6 +106,16 @@ type NodeOperations interface {
 	// GetUsedIPWithPrefixes returns the total number of used IPs including all IPs in a prefix if at-least one of
 	// the prefix IPs is in use.
 	GetUsedIPWithPrefixes() int
+
+	// AllocateStaticIP is called after invoking PrepareIPAllocation and needs
+	// to allocate the static ip on specific eni.
+	AllocateStaticIP(ctx context.Context, address string, interfaceId string, pool Pool) error
+
+	// UnbindStaticIP is called to unbind the static ip from eni but retain the neutron port
+	UnbindStaticIP(ctx context.Context, release *ReleaseAction, pool string) error
+
+	// ReleaseStaticIP is called to delete the neutron port
+	ReleaseStaticIP(address string, pool string) error
 }
 
 // AllocationImplementation is the interface an implementation must provide.
@@ -131,6 +142,10 @@ type AllocationImplementation interface {
 
 	// DeleteInstance deletes the instance from instances
 	DeleteInstance(instanceID string)
+
+	ExcludeIP(ip string)
+
+	IncludeIP(ip string)
 }
 
 // MetricsAPI represents the metrics being maintained by a NodeManager
@@ -336,7 +351,7 @@ func (n *NodeManager) Upsert(resource *v2.CiliumNode) {
 			MinInterval:     10 * time.Millisecond,
 			MetricsObserver: n.metricsAPI.PoolMaintainerTrigger(),
 			TriggerFunc: func(reasons []string) {
-				if err := node.MaintainIPPoolV2(ctx); err != nil {
+				if err := node.MaintainIPPool(ctx); err != nil {
 					node.logger().WithError(err).Warning("Unable to maintain ip pool of node")
 					backoff.Wait(ctx)
 				}
@@ -364,7 +379,7 @@ func (n *NodeManager) Upsert(resource *v2.CiliumNode) {
 			MinInterval:     10 * time.Millisecond,
 			MetricsObserver: n.metricsAPI.K8sSyncTrigger(),
 			TriggerFunc: func(reasons []string) {
-				node.syncToAPIServerV2()
+				node.syncToAPIServer()
 			},
 		})
 		if err != nil {
@@ -533,7 +548,7 @@ func (n *NodeManager) Resync(ctx context.Context, syncTime time.Time) {
 			continue
 		}
 		go func(node *Node, stats *resyncStats) {
-			n.resyncNodeV2(ctx, node, stats, syncTime)
+			n.resyncNode(ctx, node, stats, syncTime)
 			sem.Release(1)
 		}(node, &stats)
 	}
@@ -555,4 +570,40 @@ func (n *NodeManager) Resync(ctx context.Context, syncTime time.Time) {
 	for poolID, quota := range n.instancesAPI.GetPoolQuota() {
 		n.metricsAPI.SetAvailableIPsPerSubnet(string(poolID), quota.AvailabilityZone, quota.AvailableIPs)
 	}
+}
+
+// SyncMultiPool labels the node with "openstack-ip-pool" when a ciliumNode upsert or a k8s node's pool annotation changed
+func (n *NodeManager) SyncMultiPool(node *Node) error {
+	sNode, err := k8sManager.GetK8sSlimNode(node.name)
+	if err != nil {
+		return fmt.Errorf("warning: get k8s node failed: %v ", err)
+	}
+	if sNode.Annotations != nil {
+		if pools := strings.Split(sNode.Annotations[poolAnnotation], ","); len(pools) > 0 {
+			labels := map[string]string{}
+			for _, p := range pools {
+				if poolCrd := n.pools[p]; poolCrd != nil {
+					if node.pools[Pool(p)] == nil {
+						node.pools[Pool(p)] = NewCrdPool(Pool(p), node, n.releaseExcessIPs)
+						if nodeToPools[sNode.Name] == nil {
+							nodeToPools[sNode.Name] = poolSet{}
+						}
+						nodeToPools[sNode.Name][p] = InUse
+						if poolsToNodes[p] == nil {
+							poolsToNodes[p] = map[string]struct{}{}
+						}
+						poolsToNodes[p][sNode.Name] = struct{}{}
+					}
+					labels[poolLabel+"/"+p] = "true"
+				}
+			}
+			if len(labels) > 0 {
+				err := k8sManager.LabelNodeWithPool(node.name, labels)
+				if err != nil {
+					return fmt.Errorf("label node %s failed: %v", sNode.Name, err)
+				}
+			}
+		}
+	}
+	return nil
 }

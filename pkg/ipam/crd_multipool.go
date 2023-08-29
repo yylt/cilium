@@ -6,7 +6,6 @@ import (
 	"github.com/cilium/cilium/operator/watchers"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/ipam/metrics"
-	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	ipamStats "github.com/cilium/cilium/pkg/ipam/stats"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
@@ -16,6 +15,27 @@ import (
 	"sync"
 	"time"
 )
+
+type pool interface {
+	maintainCRDIPPool(ctx context.Context) (poolMutated bool, err error)
+	allocationNeeded() bool
+	releaseNeeded() (needed bool)
+	requirePoolMaintenance()
+	waitingForMaintenance() bool
+	GetAvailable() ipamTypes.AllocationMap
+	getPreAllocate() int
+	getMinAllocate() int
+	getMaxAllocate() int
+	getStatics() *Statistics
+	recalculate(ipamTypes.AllocationMap, ipamStats.InterfaceStats)
+	updateLastResync(syncTime time.Time)
+	poolMaintenanceComplete()
+	requireResync()
+	allocateStaticIP(ip string, pool Pool) error
+	requireSyncCsip()
+	syncCsipComplete()
+	waitingForSyncCsip() bool
+}
 
 // PoolStatistics represent the IP allocation statistics of a node
 type PoolStatistics struct {
@@ -63,14 +83,12 @@ type PoolStatistics struct {
 
 func NewCrdPool(name Pool, node *Node, releaseExcessIPs bool) *crdPool {
 	return &crdPool{
-		name:                name,
-		ipsMarkedForRelease: make(map[string]time.Time),
-		ipReleaseStatus:     make(map[string]string),
-		node:                node,
-		stats:               &Statistics{},
-		available:           map[string]ipamTypes.AllocationIP{},
-		statistics:          PoolStatistics{},
-		releaseExcessIPs:    releaseExcessIPs,
+		name:             name,
+		node:             node,
+		stats:            &Statistics{},
+		available:        map[string]ipamTypes.AllocationIP{},
+		statistics:       PoolStatistics{},
+		releaseExcessIPs: releaseExcessIPs,
 	}
 }
 
@@ -82,17 +100,6 @@ type crdPool struct {
 	mutex sync.RWMutex
 
 	releaseExcessIPs bool
-
-	// Excess IPs from a cilium node would be marked for release only after a delay configured by excess-ip-release-delay
-	// flag. ipsMarkedForRelease tracks the IP and the timestamp at which it was marked for release.
-	ipsMarkedForRelease map[string]time.Time
-
-	// ipReleaseStatus tracks the state for every IP considered for release.
-	// IPAMMarkForRelease  : Marked for Release
-	// IPAMReadyForRelease : Acknowledged as safe to release by agent
-	// IPAMDoNotRelease    : Release request denied by agent
-	// IPAMReleased        : IP released by the operator
-	ipReleaseStatus map[string]string
 
 	// lastMaxAdapterWarning is the timestamp when the last warning was
 	// printed that this node is out of adapters
@@ -116,33 +123,14 @@ type crdPool struct {
 	waitingForPoolMaintenance bool
 
 	statistics PoolStatistics
-}
 
-// removeStaleReleaseIPs Removes stale entries in local n.ipReleaseStatus. Once the handshake is complete agent would
-// remove entries from IP release status map in ciliumnode CRD's status. These IPs need to be purged from
-// n.ipReleaseStatus
-func (p *crdPool) removeStaleReleaseIPs() {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-	for ip, status := range p.ipReleaseStatus {
-		if status != ipamOption.IPAMReleased {
-			continue
-		}
-		if _, ok := p.node.resource.Status.IPAM.ReleaseIPs[ip]; !ok {
-			delete(p.node.ipReleaseStatus, ip)
-		}
-	}
+	needSyncCsip bool
 }
 
 // maintainCRDIPPool attempts to allocate or release all required IPs to fulfill the needed gap.
 // returns instanceMutated which tracks if state changed with the cloud provider and is used
 // to determine if IPAM pool maintainer trigger func needs to be invoked.
 func (p *crdPool) maintainCRDIPPool(ctx context.Context) (poolMutated bool, err error) {
-
-	if p.releaseExcessIPs {
-		p.removeStaleReleaseIPs()
-	}
-
 	a, err := p.determinePoolMaintenanceAction()
 	if err != nil {
 		p.abortNoLongerExcessIPs(nil)
@@ -439,4 +427,30 @@ func (p *crdPool) requireResync() {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	p.resyncNeeded = time.Now()
+}
+
+func (p *crdPool) allocateStaticIP(ip string, pool Pool) error {
+	err, stats := p.node.AllocateStaticIP(ip, pool)
+	if err != nil {
+		return err
+	}
+	if stats != nil {
+		p.stats = stats
+	}
+	return nil
+}
+
+func (p *crdPool) requireSyncCsip() {
+	p.needSyncCsip = true
+}
+
+func (p *crdPool) syncCsipComplete() {
+	p.mutex.Lock()
+	p.needSyncCsip = false
+	p.mutex.Unlock()
+
+}
+
+func (p *crdPool) waitingForSyncCsip() bool {
+	return p.needSyncCsip
 }

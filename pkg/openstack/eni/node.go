@@ -5,6 +5,7 @@ package eni
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/sirupsen/logrus"
 
@@ -365,7 +366,8 @@ func (n *Node) PrepareIPRelease(excessIPs int, scopedLog *logrus.Entry, pool ipa
 		freeIpsOnENI := []string{}
 		for _, ip := range ipsOnENI {
 			_, ipUsed := n.k8sObj.Status.IPAM.PoolUsed[pool.String()][ip.IpAddress]
-			if !ipUsed {
+			_, ipExcluded := n.manager.excludeIPs[ip.IpAddress]
+			if !ipUsed && !ipExcluded {
 				freeIpsOnENI = append(freeIpsOnENI, ip.IpAddress)
 			}
 		}
@@ -601,4 +603,74 @@ func (n *Node) ResyncInterfacesAndIPsByPool(ctx context.Context, scopedLog *logr
 
 	scopedLog.Infof("!!!!!!!!!!!! ResyncInterfacesAndIPs result, remainAvailableENIsCount is %d, poolAvailable is %+v", stats.RemainingAvailableInterfaceCount, poolAvailable)
 	return poolAvailable, stats, nil
+}
+
+func (n *Node) AllocateStaticIP(ctx context.Context, address string, interfaceId string, pool ipam.Pool) error {
+	log.Infof("@@@@@@@@@@@@@@@@@@@ Do Allocate static IP..... %v", address)
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+	err := n.manager.api.AssignStaticPrivateIPAddresses(ctx, interfaceId, address)
+	if err != nil {
+		return err
+	}
+
+	if _, ok := n.k8sObj.Status.OpenStack.ENIs[interfaceId]; !ok {
+		return nil
+	}
+	eni := n.k8sObj.Status.OpenStack.ENIs[interfaceId]
+	secondaryIPSets := eni.SecondaryIPSets
+	privateIP := eniTypes.PrivateIPSet{
+		IpAddress: address,
+	}
+	secondaryIPSets = append(secondaryIPSets, privateIP)
+	eni.SecondaryIPSets = secondaryIPSets
+	n.k8sObj.Status.OpenStack.ENIs[interfaceId] = eni
+
+	if allocationMap, ok := n.k8sObj.Spec.IPAM.CrdPools[pool.String()]; ok {
+		allocationMap[address] = ipamTypes.AllocationIP{
+			Resource: interfaceId,
+		}
+		n.k8sObj.Spec.IPAM.CrdPools[pool.String()] = allocationMap
+	}
+	return nil
+}
+
+func (n *Node) UnbindStaticIP(ctx context.Context, release *ipam.ReleaseAction, pool string) error {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+	err := n.manager.api.UnassignPrivateIPAddressesRetainPort(ctx, release.InterfaceID, release.IPsToRelease)
+	if err != nil {
+		return err
+	}
+
+	if _, ok := n.k8sObj.Status.OpenStack.ENIs[release.InterfaceID]; !ok {
+		return nil
+	}
+	var secondaryIPSets []eniTypes.PrivateIPSet
+	for _, eni := range n.k8sObj.Status.OpenStack.ENIs[release.InterfaceID].SecondaryIPSets {
+		if eni.IpAddress != release.IPsToRelease[0] {
+			secondaryIPSets = append(secondaryIPSets, eni)
+		}
+	}
+	if allocationMap, ok := n.k8sObj.Spec.IPAM.CrdPools[pool]; ok {
+		delete(allocationMap, release.IPsToRelease[0])
+		n.k8sObj.Spec.IPAM.CrdPools[pool] = allocationMap
+	}
+	e := n.k8sObj.Status.OpenStack.ENIs[release.InterfaceID]
+	e.SecondaryIPSets = secondaryIPSets
+	n.k8sObj.Status.OpenStack.ENIs[release.InterfaceID] = e
+	return nil
+}
+
+func (n *Node) ReleaseStaticIP(address string, pool string) error {
+	if enis, ok := n.poolsEnis[ipam.Pool(pool)]; ok && len(enis) > 0 {
+		err := n.manager.api.DeleteNeutronPort(address, n.k8sObj.Spec.OpenStack.VPCID)
+		if err != nil {
+			log.Infof("release static failed: %v", err)
+			return err
+		}
+	} else {
+		return errors.New("no eni found in pool")
+	}
+	return nil
 }
