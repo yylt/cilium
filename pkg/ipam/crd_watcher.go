@@ -6,6 +6,7 @@ package ipam
 import (
 	"context"
 	"fmt"
+	operatorOption "github.com/cilium/cilium/operator/option"
 	"github.com/cilium/cilium/operator/watchers"
 	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	v2alpha12 "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/typed/cilium.io/v2alpha1"
@@ -73,6 +74,12 @@ const (
 	eniAddressNotFoundErr = "no address found attached in eni"
 )
 
+const (
+	CiliumPodIPPoolVersion         = "cilium.io/v2alpha1"
+	CiliumPodIPPoolKind            = "CiliumPodIPPool"
+	CiliumPodIPPoolDefaultPoolName = "default"
+)
+
 type set map[string]struct{}
 type poolSet map[string]poolState
 type poolState int
@@ -104,6 +111,7 @@ func InitIPAMOpenStackExtra(slimClient slimclientset.Interface, alphaClient v2al
 		staticIPInit(alphaClient, stopCh)
 
 		k8sManager.updateCiliumNodeManagerPool()
+		k8sManager.createDefaultPool()
 
 		close(multiPoolExtraSynced)
 	})
@@ -853,4 +861,34 @@ loop:
 			log.Error(err)
 		}
 	}
+}
+
+func (extraManager) createDefaultPool() {
+	if defaultSubnetID := operatorOption.Config.OpenStackDefaultSubnetID; defaultSubnetID != "" {
+		if defaultCIDR := operatorOption.Config.OpenStackDefaultCIDR; defaultCIDR != "" {
+
+			defaultPool := &v2alpha1.CiliumPodIPPool{
+				TypeMeta: v1.TypeMeta{
+					APIVersion: CiliumPodIPPoolVersion,
+					Kind:       CiliumPodIPPoolKind,
+				},
+				ObjectMeta: v1.ObjectMeta{
+					Name: CiliumPodIPPoolDefaultPoolName,
+				},
+				Spec: v2alpha1.IPPoolSpec{
+					SubnetId: defaultSubnetID,
+					CIDR:     defaultCIDR,
+				},
+			}
+			_, err := k8sManager.alphaClient.CiliumPodIPPools().Create(context.TODO(), defaultPool, v1.CreateOptions{})
+			if err != nil && !k8sErrors.IsAlreadyExists(err) {
+				log.Errorf("An error occurred during the creation of default pool, subnet-id is: %s, error is %s.", defaultSubnetID, err.Error())
+				return
+			} else {
+				log.Infof("Successfully created the default pool, subnet-id is %s", defaultSubnetID)
+				return
+			}
+		}
+	}
+	log.Warnf("The creation of default pool has been ignored, due to no cidr or subnet-id set.")
 }

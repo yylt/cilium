@@ -39,7 +39,7 @@ func (a *AllocatorOpenStack) Init(ctx context.Context) error {
 	var err error
 	networkID := operatorOption.Config.OpenStackNetworkID
 	if networkID == "" {
-			return err
+		return err
 	}
 
 	subnetID := operatorOption.Config.OpenStackSubnetID

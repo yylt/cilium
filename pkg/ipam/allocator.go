@@ -581,8 +581,6 @@ func (ipam *IPAM) determineIPPolicy(owner string) (string, int, error) {
 	}
 
 	policy, time, err := ipam.metadata.GetIPPolicyForPod(owner)
-	log.Infof("@@@@ %v", policy)
-	log.Infof("@@@@ %v", policy == "true")
 	if err != nil {
 		return "", 0, fmt.Errorf("unable to determine IP policy for owner %q: %w", owner, err)
 	}

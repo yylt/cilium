@@ -247,6 +247,12 @@ const (
 	// OpenStackSubnetID allows user to specific subnet
 	OpenStackSubnetID = "openstack-subnet-id"
 
+	// OpenStackDefaultSubnetID allows user to specific subnet for default pool
+	OpenStackDefaultSubnetID = "openstack-default-subnet-id"
+
+	// OpenStackDefaultCIDR allows user to specific cidr for default pool
+	OpenStackDefaultCIDR = "openstack-default-cidr"
+
 	// OpenStackProjectID allows user to specific project
 	OpenStackProjectID = "openstack-project-id"
 
@@ -538,6 +544,12 @@ type OperatorConfig struct {
 	// OpenStack allow user to specific subnet
 	OpenStackSubnetID string
 
+	// OpenStack allow user to specific subnet for default pool
+	OpenStackDefaultSubnetID string
+
+	// OpenStack allow user to specific cidr for default pool
+	OpenStackDefaultCIDR string
+
 	// OpenStack allow user to specific project
 	OpenStackProjectID string
 
@@ -737,6 +749,8 @@ func (c *OperatorConfig) Populate(vp *viper.Viper) {
 	c.OpenStackSubnetID = vp.GetString(OpenStackSubnetID)
 	c.OpenStackProjectID = vp.GetString(OpenStackProjectID)
 	c.OpenStackReleaseExcessIPs = vp.GetBool(OpenStackReleaseExcessIPs)
+	c.OpenStackDefaultSubnetID = vp.GetString(OpenStackDefaultSubnetID)
+	c.OpenStackDefaultCIDR = vp.GetString(OpenStackDefaultCIDR)
 
 	// CiliumEndpointSlice options
 	c.CESMaxCEPsInCES = vp.GetInt(CESMaxCEPsInCES)
