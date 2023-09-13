@@ -146,10 +146,10 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 	instanceID := n.node.InstanceID()
 	netID := resource.Spec.OpenStack.VPCID
 	eniID, eni, err := n.manager.api.CreateNetworkInterface(ctx, subnet.ID, netID, instanceID, securityGroupIDs, pool)
-	eni.Pool = pool.String()
 	if err != nil {
 		return 0, unableToCreateENI, fmt.Errorf("%s %s", errUnableToCreateENI, err)
 	}
+	eni.Pool = pool.String()
 
 	scopedLog = scopedLog.WithField(fieldENIID, eniID)
 	scopedLog.Info("Created new ENI")
@@ -160,9 +160,23 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 
 	err = n.manager.api.AttachNetworkInterface(ctx, instanceID, eniID)
 	if err != nil {
-		err = n.manager.api.DeleteNetworkInterface(ctx, eniID)
-		if err != nil {
-			scopedLog.Errorf("Failed to release ENI after failure to attach, %s", err.Error())
+		if ifaces, err1 := n.manager.api.ListNetworkInterface(ctx, instanceID); err != nil {
+			for _, iface := range ifaces {
+				if iface.PortID == eniID {
+					err2 := n.manager.api.DetachNetworkInterface(ctx, instanceID, eniID)
+					if err2 != nil {
+						log.Infof("########### Failed to detach network interfaces, %s", err2.Error())
+					}
+					break
+				}
+			}
+		} else if err1 != nil {
+			log.Infof("########### Failed to list network interfaces, %s", err1.Error())
+		}
+
+		err1 := n.manager.api.DeleteNetworkInterface(ctx, eniID)
+		if err1 != nil {
+			scopedLog.Errorf("Failed to release ENI after failure to attach, %s", err1.Error())
 		}
 		return 0, unableToAttachENI, fmt.Errorf("%s %s", errUnableToAttachENI, err)
 	}
@@ -615,7 +629,7 @@ func (n *Node) AllocateStaticIP(ctx context.Context, address string, interfaceId
 	}
 
 	if _, ok := n.k8sObj.Status.OpenStack.ENIs[interfaceId]; !ok {
-		return nil
+		return fmt.Errorf("eni not found on node")
 	}
 	eni := n.k8sObj.Status.OpenStack.ENIs[interfaceId]
 	secondaryIPSets := eni.SecondaryIPSets

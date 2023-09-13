@@ -47,7 +47,7 @@ const (
 	PodInterfaceName = "cilium-pod-port"
 
 	VMDeviceOwner  = "compute:"
-	PodDeviceOwner = "kubernetes:"
+	PodDeviceOwner = "network:secondary"
 	CharSet        = "abcdefghijklmnopqrstuvwxyz0123456789"
 
 	FakeAddresses = 100
@@ -320,6 +320,21 @@ func (c *Client) DeleteNetworkInterface(ctx context.Context, eniID string) error
 	return r.ExtractErr()
 }
 
+// ListNetworkInterface list all interfaces with the specified instanceID
+func (c *Client) ListNetworkInterface(ctx context.Context, instanceID string) ([]attachinterfaces.Interface, error) {
+	var err error
+	var result []attachinterfaces.Interface
+	err = attachinterfaces.List(c.neutronV2, instanceID).EachPage(
+		func(page pagination.Page) (bool, error) {
+			result, err = attachinterfaces.ExtractInterfaces(page)
+			if err != nil {
+				return false, err
+			}
+			return true, nil
+		})
+	return result, err
+}
+
 // AttachNetworkInterface attaches a previously created ENI to an instance
 func (c *Client) AttachNetworkInterface(ctx context.Context, instanceID, eniID string) error {
 	log.Errorf("######## Do attach network interface #######")
@@ -360,7 +375,8 @@ func (c *Client) AssignPrivateIPAddresses(ctx context.Context, eniID string, toA
 			Name:        fmt.Sprintf(PodInterfaceName+"-%s", randomString(10)),
 			NetworkID:   port.NetworkID,
 			SubnetID:    port.FixedIPs[0].SubnetID,
-			DeviceOwner: fmt.Sprintf(PodDeviceOwner+"%s", eniID),
+			DeviceOwner: PodDeviceOwner,
+			DeviceID:    eniID,
 			ProjectID:   c.filters[ProjectID],
 		}
 		p, err := c.createPort(opt)
@@ -375,7 +391,7 @@ func (c *Client) AssignPrivateIPAddresses(ctx context.Context, eniID string, toA
 		err = c.updatePortAllowedAddressPairs(eniID, allowedAddressPairs)
 		if err != nil {
 			log.Errorf("######## Failed to update port allowed-address-pairs with error: %+v", err)
-			err = c.deletePort(eniID)
+			err = c.deletePort(p.ID)
 			if err != nil {
 				log.Errorf("######## Failed to rollback to delete port with error: %+v", err)
 			}
@@ -510,6 +526,7 @@ func (c *Client) createPort(opt PortCreateOpts) (*eniTypes.ENI, error) {
 		Name:        opt.Name,
 		NetworkID:   opt.NetworkID,
 		DeviceOwner: opt.DeviceOwner,
+		DeviceID:    opt.DeviceID,
 		ProjectID:   opt.ProjectID,
 		FixedIPs: FixedIPOpts{
 			{
@@ -603,13 +620,7 @@ func (c *Client) describeNetworkInterfaces() ([]ports.Port, error) {
 	var err error
 
 	opts := ports.ListOpts{
-		NetworkID: c.filters[NetworkID],
 		ProjectID: c.filters[ProjectID],
-		FixedIPs: []ports.FixedIPOpts{
-			ports.FixedIPOpts{
-				SubnetID: c.filters[SubnetID],
-			},
-		},
 	}
 
 	err = ports.List(c.neutronV2, opts).EachPage(func(page pagination.Page) (bool, error) {
@@ -629,7 +640,10 @@ func (c *Client) describeVpcs() ([]networks.Network, error) {
 	opts := networks.ListOpts{
 		ProjectID: c.filters[ProjectID],
 	}
-	pages, _ := networks.List(c.neutronV2, opts).AllPages()
+	pages, err := networks.List(c.neutronV2, opts).AllPages()
+	if err != nil {
+		return nil, err
+	}
 	allNetworks, _ := networks.ExtractNetworks(pages)
 	return allNetworks, nil
 }
@@ -638,9 +652,11 @@ func (c *Client) describeVpcs() ([]networks.Network, error) {
 func (c *Client) describeSubnets() ([]subnets.Subnet, error) {
 	opts := subnets.ListOpts{
 		ProjectID: c.filters[ProjectID],
-		NetworkID: c.filters[NetworkID],
 	}
-	pages, _ := subnets.List(c.neutronV2, opts).AllPages()
+	pages, err := subnets.List(c.neutronV2, opts).AllPages()
+	if err != nil {
+		return nil, err
+	}
 	allSubnets, _ := subnets.ExtractSubnets(pages)
 	return allSubnets, nil
 }
@@ -649,7 +665,10 @@ func (c *Client) describeSecurityGroups() ([]groups.SecGroup, error) {
 	opts := groups.ListOpts{
 		ProjectID: c.filters[ProjectID],
 	}
-	pages, _ := groups.List(c.neutronV2, opts).AllPages()
+	pages, err := groups.List(c.neutronV2, opts).AllPages()
+	if err != nil {
+		return nil, err
+	}
 	allSecGroups, _ := groups.ExtractGroups(pages)
 	return allSecGroups, nil
 }
@@ -714,18 +733,28 @@ func (c *Client) AssignStaticPrivateIPAddresses(ctx context.Context, eniID strin
 	p, err := c.getPortFromIP(port.NetworkID, address)
 	if p == nil {
 		_, err = c.createPort(PortCreateOpts{
-			Name:        fmt.Sprintf("cilium-pod-port-%s", randomString(10)),
+			Name:        fmt.Sprintf(PodInterfaceName+"-%s", randomString(10)),
 			NetworkID:   port.NetworkID,
 			IPAddress:   address,
 			SubnetID:    port.FixedIPs[0].SubnetID,
-			DeviceOwner: fmt.Sprintf(PodDeviceOwner+"%s", eniID),
+			DeviceOwner: PodDeviceOwner,
+			DeviceID:    eniID,
 			ProjectID:   c.filters[ProjectID],
 		})
 		if err != nil {
-			log.Infof("back to create static ip port failed: %v", err)
+			log.Infof("Back to create static ip port failed: %v", err)
 			return err
 		}
-		log.Infof("back to create static ip port: %v success", address)
+		log.Infof("Back to create static ip port: %v success", address)
+	} else {
+		opts := ports.UpdateOpts{
+			DeviceID: &eniID,
+		}
+		_, err = ports.Update(c.neutronV2, p.ID, opts).Extract()
+		if err != nil {
+			return err
+		}
+		log.Infof("Update port for static ip %s success", address)
 	}
 
 	if err != nil {

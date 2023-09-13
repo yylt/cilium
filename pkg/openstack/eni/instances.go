@@ -6,6 +6,7 @@ package eni
 import (
 	"context"
 	eniTypes "github.com/cilium/cilium/pkg/openstack/eni/types"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/attachinterfaces"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -33,6 +34,7 @@ type OpenStackAPI interface {
 	UnassignPrivateIPAddressesRetainPort(ctx context.Context, eniID string, address []string) error
 	AssignStaticPrivateIPAddresses(ctx context.Context, eniID string, address string) error
 	DeleteNeutronPort(address string, networkID string) error
+	ListNetworkInterface(ctx context.Context, instanceID string) ([]attachinterfaces.Interface, error)
 }
 
 // InstancesManager maintains the list of instances. It must be kept up to date

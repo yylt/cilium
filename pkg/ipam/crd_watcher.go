@@ -374,7 +374,7 @@ func (m extraManager) updateStaticIP(ipCrd *v2alpha1.CiliumStaticIP) {
 
 	switch ipCrd.Status.IPStatus {
 	case v2alpha1.WaitingForAssign:
-		log.Debugf("ready to assign ip: %v for pod: %v, on node: %v .", ip, podFullName, node)
+		log.Infof("ready to assign ip: %v for pod: %v, on node: %v .", ip, podFullName, node)
 		if n, ok := k8sManager.nodeManager.nodes[node]; ok {
 			if p, ok := n.pools[Pool(pool)]; ok {
 				err := p.allocateStaticIP(ip, Pool(pool))
