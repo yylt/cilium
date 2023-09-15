@@ -405,13 +405,13 @@ func (c *Client) AssignPrivateIPAddresses(ctx context.Context, eniID string, toA
 
 // UnassignPrivateIPAddresses unassign specified IP addresses from ENI
 // should not provide Primary IP
-func (c *Client) UnassignPrivateIPAddresses(ctx context.Context, eniID string, addresses []string) error {
+func (c *Client) UnassignPrivateIPAddresses(ctx context.Context, eniID string, addresses []string) (isEmpty bool, err error) {
 	log.Errorf("Do Unassign ip addresses for nic %s, addresses to release is %s", eniID, addresses)
 
 	port, err := c.getPort(eniID)
 	if err != nil {
 		log.Errorf("######## Failed to get port: %s, with error %s", eniID, err)
-		return err
+		return false, err
 	}
 
 	networkId := port.NetworkID
@@ -444,7 +444,7 @@ func (c *Client) UnassignPrivateIPAddresses(ctx context.Context, eniID string, a
 		if err != nil {
 			log.Errorf("######## Failed to rollback to delete port with error: %+v", err)
 		}
-		return err
+		return false, err
 	}
 
 	for _, ip := range releasedIP {
@@ -458,8 +458,15 @@ func (c *Client) UnassignPrivateIPAddresses(ctx context.Context, eniID string, a
 			log.Errorf("######## Failed to delete port %s with error: %+v", port.ID, err)
 		}
 	}
+	port, err = c.getPort(eniID)
+	if err != nil {
+		return false, err
+	}
+	if len(port.AllowedAddressPairs) == 0 {
+		return true, nil
+	}
 
-	return nil
+	return false, nil
 }
 
 // updatePortAllowedAddressPairs to assign secondary ip address

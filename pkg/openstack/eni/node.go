@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/sirupsen/logrus"
+	"sync"
 
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/ipam"
@@ -65,6 +66,8 @@ type Node struct {
 
 	// poolsEnis is the list of eniIDs that belong to the ipam.Pool
 	poolsEnis map[ipam.Pool][]string
+
+	ifaceMutex sync.Mutex
 }
 
 // UpdatedNode is called when an update to the CiliumNode is received.
@@ -340,6 +343,8 @@ func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry, pool ipam.Pool) (*ip
 // AllocateIPs performs the ENI allocation operation
 func (n *Node) AllocateIPs(ctx context.Context, a *ipam.AllocationAction, pool ipam.Pool) error {
 	log.Infof("@@@@@@@@@@@@@@@@@@@ Do Allocate IPs.....")
+	n.ifaceMutex.Lock()
+	defer n.ifaceMutex.Unlock()
 	_, err := n.manager.api.AssignPrivateIPAddresses(ctx, a.InterfaceID, a.AvailableForAllocation)
 	return err
 }
@@ -406,7 +411,25 @@ func (n *Node) PrepareIPRelease(excessIPs int, scopedLog *logrus.Entry, pool ipa
 
 // ReleaseIPs performs the ENI IP release operation
 func (n *Node) ReleaseIPs(ctx context.Context, r *ipam.ReleaseAction) error {
-	return n.manager.api.UnassignPrivateIPAddresses(ctx, r.InterfaceID, r.IPsToRelease)
+	n.ifaceMutex.Lock()
+	defer n.ifaceMutex.Unlock()
+	isEmpty, err := n.manager.api.UnassignPrivateIPAddresses(ctx, r.InterfaceID, r.IPsToRelease)
+	if err != nil {
+		return err
+	}
+	if isEmpty {
+		err = n.manager.api.DeleteNetworkInterface(ctx, r.InterfaceID)
+		if err != nil {
+			return err
+		}
+
+		err = n.manager.api.DetachNetworkInterface(ctx, n.instanceID, r.InterfaceID)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // GetMaximumAllocatableIPv4 returns the maximum amount of IPv4 addresses
@@ -619,12 +642,16 @@ func (n *Node) ResyncInterfacesAndIPsByPool(ctx context.Context, scopedLog *logr
 
 func (n *Node) AllocateStaticIP(ctx context.Context, address string, interfaceId string, pool ipam.Pool) error {
 	log.Infof("@@@@@@@@@@@@@@@@@@@ Do Allocate static IP..... %v", address)
-	n.mutex.Lock()
-	defer n.mutex.Unlock()
+	
+	n.ifaceMutex.Lock()
 	err := n.manager.api.AssignStaticPrivateIPAddresses(ctx, interfaceId, address)
+	n.ifaceMutex.Unlock()
 	if err != nil {
 		return err
 	}
+
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
 
 	if _, ok := n.k8sObj.Status.OpenStack.ENIs[interfaceId]; !ok {
 		return fmt.Errorf("eni not found on node")
