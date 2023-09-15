@@ -40,6 +40,9 @@ type IPPoolSpec struct {
 
 	// +kubebuilder:validation:Required
 	CIDR string `json:"cidr"`
+
+	// +kubebuilder:validation:Required
+	VPCId string `json:"vpc-id"`
 }
 
 type IPv4PoolSpec struct {

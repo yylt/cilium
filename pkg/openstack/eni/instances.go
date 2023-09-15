@@ -127,6 +127,10 @@ func (m *InstancesManager) Resync(ctx context.Context) time.Time {
 	m.securityGroups = securityGroups
 	m.mutex.Unlock()
 
+	if subnets != nil {
+		ipam.SyncPoolToAPIServer(subnets)
+	}
+
 	return resyncStart
 }
 

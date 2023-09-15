@@ -497,6 +497,9 @@ func (in *IPPoolSpec) DeepEqual(other *IPPoolSpec) bool {
 	if in.CIDR != other.CIDR {
 		return false
 	}
+	if in.VPCId != other.VPCId {
+		return false
+	}
 
 	return true
 }

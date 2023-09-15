@@ -578,32 +578,31 @@ func (n *NodeManager) SyncMultiPool(node *Node) error {
 	if err != nil {
 		return fmt.Errorf("warning: get k8s node failed: %v ", err)
 	}
-	if sNode.Annotations != nil {
-		if pools := strings.Split(sNode.Annotations[poolAnnotation], ","); len(pools) > 0 {
-			labels := map[string]string{}
-			for _, p := range pools {
-				if poolCrd := n.pools[p]; poolCrd != nil {
-					if node.pools[Pool(p)] == nil {
-						node.pools[Pool(p)] = NewCrdPool(Pool(p), node, n.releaseExcessIPs)
-						if nodeToPools[sNode.Name] == nil {
-							nodeToPools[sNode.Name] = poolSet{}
-						}
-						nodeToPools[sNode.Name][p] = InUse
-						if poolsToNodes[p] == nil {
-							poolsToNodes[p] = map[string]struct{}{}
-						}
-						poolsToNodes[p][sNode.Name] = struct{}{}
+	var pools []string
+
+	for label, _ := range sNode.Labels {
+		if p, found := strings.CutPrefix(label, poolLabel+"/"); found {
+			pools = append(pools, p)
+		}
+	}
+
+	if len(pools) > 0 {
+		for _, p := range pools {
+			if _, hasPoolCrd := n.pools[p]; hasPoolCrd {
+				if node.pools[Pool(p)] == nil {
+					node.pools[Pool(p)] = NewCrdPool(Pool(p), node, n.releaseExcessIPs)
+					if nodeToPools[sNode.Name] == nil {
+						nodeToPools[sNode.Name] = poolSet{}
 					}
-					labels[poolLabel+"/"+p] = "true"
-				}
-			}
-			if len(labels) > 0 {
-				err := k8sManager.LabelNodeWithPool(node.name, labels)
-				if err != nil {
-					return fmt.Errorf("label node %s failed: %v", sNode.Name, err)
+					nodeToPools[sNode.Name][p] = InUse
+					if poolsToNodes[p] == nil {
+						poolsToNodes[p] = map[string]struct{}{}
+					}
+					poolsToNodes[p][sNode.Name] = struct{}{}
 				}
 			}
 		}
 	}
+
 	return nil
 }

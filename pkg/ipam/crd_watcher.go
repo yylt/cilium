@@ -8,6 +8,7 @@ import (
 	"fmt"
 	operatorOption "github.com/cilium/cilium/operator/option"
 	"github.com/cilium/cilium/operator/watchers"
+	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	v2alpha12 "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/typed/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/k8s/informer"
@@ -55,6 +56,8 @@ var (
 
 	// pool to node map
 	poolsToNodes map[string]set
+
+	creationDefaultPoolOnce sync.Once
 )
 
 const (
@@ -111,8 +114,7 @@ func InitIPAMOpenStackExtra(slimClient slimclientset.Interface, alphaClient v2al
 		staticIPInit(alphaClient, stopCh)
 
 		k8sManager.updateCiliumNodeManagerPool()
-		k8sManager.createDefaultPool()
-
+		k8sManager.apiReady = true
 		close(multiPoolExtraSynced)
 	})
 
@@ -153,9 +155,6 @@ func poolsInit(poolGetter v2alpha12.CiliumPodIPPoolsGetter, stopCh <-chan struct
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				updatePool(obj)
-			},
-			UpdateFunc: func(_, newObj interface{}) {
-				updatePool(newObj)
 			},
 			DeleteFunc: func(obj interface{}) {
 				deletePool(obj)
@@ -215,6 +214,7 @@ type extraManager struct {
 	updateMutex sync.Mutex
 	reSync      bool
 	reSyncMap   map[*Node]struct{}
+	apiReady    bool
 }
 
 func (extraManager) requireSync(node *Node) {
@@ -295,9 +295,23 @@ func (extraManager) LabelNodeWithPool(nodeName string, labels map[string]string)
 func compareNodeAnnotationAndLabelChange(oldObj, newObj interface{}) bool {
 	oldAccessor, _ := meta.Accessor(oldObj)
 	newAccessor, _ := meta.Accessor(newObj)
-	if oldAccessor.GetAnnotations()[poolAnnotation] != newAccessor.GetAnnotations()[poolAnnotation] {
-		return true
+
+	oldLabels := oldAccessor.GetLabels()
+	newLabels := newAccessor.GetLabels()
+
+	if oldLabels == nil {
+		oldLabels = map[string]string{}
 	}
+
+	for newLabel, _ := range newLabels {
+		if strings.HasPrefix(newLabel, poolLabel) {
+			if _, has := oldLabels[newLabel]; !has {
+				return true
+			}
+		}
+
+	}
+
 	return false
 }
 
@@ -427,25 +441,10 @@ func (m extraManager) updateStaticIP(ipCrd *v2alpha1.CiliumStaticIP) {
 							return
 						}
 						if exists {
-							if pod.(*slim_corev1.Pod).Status.Phase == slim_corev1.PodPending {
-								if pod.(*slim_corev1.Pod).Spec.NodeName == ipCrd.Spec.NodeName {
-									ipCrd.Status.IPStatus = v2alpha1.Assigned
-									ipCrd.Status.UpdateTime = slim_metav1.Time(v1.Time{
-										Time: now,
-									})
-									_, err = k8sManager.alphaClient.CiliumStaticIPs(ipCrd.Namespace).Update(context.TODO(), ipCrd, v1.UpdateOptions{})
-									if err != nil {
-										log.Errorf("update statip ip status failed, when unbind ip: %s for pod: %s on node: %s, error is %s.",
-											ip, podFullName, node, err)
-									}
-								} else {
-									// now pod is in PodPending status but ip is being bound to another node, so we should unbind first
-									goto unbind
-								}
+							if pod.(*slim_corev1.Pod).Status.Phase == slim_corev1.PodRunning {
+								return
 							}
-							return
 						}
-					unbind:
 						log.Debugf("ready to unbind static ip %s for pod %s on node: %s", ip, podFullName, node)
 						err = n.Ops().UnbindStaticIP(context.TODO(), action, pool)
 						if err != nil && !strings.Contains(err.Error(), eniAddressNotFoundErr) {
@@ -737,12 +736,6 @@ func transformToNode(obj interface{}) (interface{}, error) {
 				Annotations:     concreteObj.Annotations,
 				Labels:          concreteObj.Labels,
 			},
-			Spec: slim_corev1.NodeSpec{
-				Taints: concreteObj.Spec.Taints,
-			},
-			Status: slim_corev1.NodeStatus{
-				Conditions: concreteObj.Status.Conditions,
-			},
 		}
 		*concreteObj = slim_corev1.Node{}
 		return n, nil
@@ -760,12 +753,6 @@ func transformToNode(obj interface{}) (interface{}, error) {
 					ResourceVersion: node.ResourceVersion,
 					Annotations:     node.Annotations,
 					Labels:          node.Labels,
-				},
-				Spec: slim_corev1.NodeSpec{
-					Taints: node.Spec.Taints,
-				},
-				Status: slim_corev1.NodeStatus{
-					Conditions: node.Status.Conditions,
 				},
 			},
 		}
@@ -788,6 +775,8 @@ func transformToPool(obj interface{}) (interface{}, error) {
 			},
 			Spec: v2alpha1.IPPoolSpec{
 				SubnetId: concreteObj.Spec.SubnetId,
+				VPCId:    concreteObj.Spec.VPCId,
+				CIDR:     concreteObj.Spec.CIDR,
 			},
 		}
 		*concreteObj = v2alpha1.CiliumPodIPPool{}
@@ -807,6 +796,8 @@ func transformToPool(obj interface{}) (interface{}, error) {
 				},
 				Spec: v2alpha1.IPPoolSpec{
 					SubnetId: p.Spec.SubnetId,
+					VPCId:    p.Spec.VPCId,
+					CIDR:     p.Spec.CIDR,
 				},
 			},
 		}
@@ -837,7 +828,6 @@ func updatePool(obj interface{}) {
 		}
 	}
 	k8sManager.nodeManager.pools[key] = p.(*v2alpha1.CiliumPodIPPool)
-
 }
 
 func deletePool(obj interface{}) {
@@ -863,10 +853,9 @@ loop:
 	}
 }
 
-func (extraManager) createDefaultPool() {
+func (extraManager) CreateDefaultPool(subnets ipamTypes.SubnetMap) {
 	if defaultSubnetID := operatorOption.Config.OpenStackDefaultSubnetID; defaultSubnetID != "" {
-		if defaultCIDR := operatorOption.Config.OpenStackDefaultCIDR; defaultCIDR != "" {
-
+		if subnet, ok := subnets[defaultSubnetID]; ok {
 			defaultPool := &v2alpha1.CiliumPodIPPool{
 				TypeMeta: v1.TypeMeta{
 					APIVersion: CiliumPodIPPoolVersion,
@@ -877,7 +866,8 @@ func (extraManager) createDefaultPool() {
 				},
 				Spec: v2alpha1.IPPoolSpec{
 					SubnetId: defaultSubnetID,
-					CIDR:     defaultCIDR,
+					CIDR:     subnet.CIDR.String(),
+					VPCId:    subnet.VirtualNetworkID,
 				},
 			}
 			_, err := k8sManager.alphaClient.CiliumPodIPPools().Create(context.TODO(), defaultPool, v1.CreateOptions{})
@@ -888,7 +878,33 @@ func (extraManager) createDefaultPool() {
 				log.Infof("Successfully created the default pool, subnet-id is %s", defaultSubnetID)
 				return
 			}
+		} else {
+			log.Warnf("The creation of default pool has been ignored, due to subnet-id %s not found.", defaultSubnetID)
 		}
 	}
-	log.Warnf("The creation of default pool has been ignored, due to no cidr or subnet-id set.")
+	log.Warnf("The creation of default pool has been ignored, due to no subnet-id set.")
+}
+
+func SyncPoolToAPIServer(subnets ipamTypes.SubnetMap) {
+	if !k8sManager.apiReady {
+		return
+	}
+	creationDefaultPoolOnce.Do(
+		func() {
+			k8sManager.CreateDefaultPool(subnets)
+		},
+	)
+	for _, p := range k8sManager.ListCiliumIPPool() {
+		if p.Spec.CIDR == "" || p.Spec.VPCId == "" {
+			if subnet, ok := subnets[p.Spec.SubnetId]; ok {
+				newPool := p.DeepCopy()
+				newPool.Spec.VPCId = subnet.VirtualNetworkID
+				newPool.Spec.CIDR = subnet.CIDR.String()
+				_, err := k8sManager.alphaClient.CiliumPodIPPools().Update(context.TODO(), newPool, v1.UpdateOptions{})
+				if err != nil {
+					log.Errorf("Update ciliumPodIPPool %s failed, error is %s", p.Name, err)
+				}
+			}
+		}
+	}
 }

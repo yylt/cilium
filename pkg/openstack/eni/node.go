@@ -121,8 +121,7 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 		return 0,
 			unableToFindSubnet,
 			fmt.Errorf(
-				"No matching subnet available for interface creation (VPC=%s AZ=%s SubnetID=%s)",
-				resource.Spec.OpenStack.VPCID,
+				"No matching subnet available for interface creation (AZ=%s SubnetID=%s)",
 				resource.Spec.OpenStack.AvailabilityZone,
 				resource.Spec.OpenStack.SubnetID,
 			)
@@ -144,8 +143,7 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 	scopedLog.Info("No more IPs available, creating new ENI")
 
 	instanceID := n.node.InstanceID()
-	netID := resource.Spec.OpenStack.VPCID
-	eniID, eni, err := n.manager.api.CreateNetworkInterface(ctx, subnet.ID, netID, instanceID, securityGroupIDs, pool)
+	eniID, eni, err := n.manager.api.CreateNetworkInterface(ctx, subnet.ID, subnet.VirtualNetworkID, instanceID, securityGroupIDs, pool)
 	if err != nil {
 		return 0, unableToCreateENI, fmt.Errorf("%s %s", errUnableToCreateENI, err)
 	}
@@ -678,7 +676,10 @@ func (n *Node) UnbindStaticIP(ctx context.Context, release *ipam.ReleaseAction, 
 
 func (n *Node) ReleaseStaticIP(address string, pool string) error {
 	if enis, ok := n.poolsEnis[ipam.Pool(pool)]; ok && len(enis) > 0 {
-		err := n.manager.api.DeleteNeutronPort(address, n.k8sObj.Spec.OpenStack.VPCID)
+		if _, ok = n.k8sObj.Status.ENI.ENIs[enis[0]]; !ok {
+			return fmt.Errorf("eni %s not found on node %s", enis[0], n.k8sObj.Name)
+		}
+		err := n.manager.api.DeleteNeutronPort(address, n.k8sObj.Status.ENI.ENIs[enis[0]].VPC.ID)
 		if err != nil {
 			log.Infof("release static failed: %v", err)
 			return err

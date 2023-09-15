@@ -23,8 +23,6 @@ func init() {
 	option.BindEnv(Vp, operatorOption.OpenStackReleaseExcessIPs)
 	flags.String(operatorOption.OpenStackDefaultSubnetID, "", "Specific subnet ID for OpenStack to create default pool")
 	option.BindEnv(Vp, operatorOption.OpenStackDefaultSubnetID)
-	flags.String(operatorOption.OpenStackDefaultCIDR, "", "Specific cidr for OpenStack to create default pool")
-	option.BindEnv(Vp, operatorOption.OpenStackDefaultCIDR)
 
 	Vp.BindPFlags(flags)
 }

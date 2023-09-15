@@ -86,9 +86,12 @@ spec:
                 type: object
               subnet-id:
                 type: string
+              vpc-id:
+                type: string
             required:
             - cidr
             - subnet-id
+            - vpc-id
             type: object
         required:
         - spec
