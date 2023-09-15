@@ -29,3 +29,11 @@ func updateURL(c *gophercloud.ServiceClient, id string) string {
 func deleteURL(c *gophercloud.ServiceClient, id string) string {
 	return resourceURL(c, id)
 }
+
+func addAllowedAddressPairURL(c *gophercloud.ServiceClient, id string) string {
+	return resourceURL(c, id) + "/add_allowed_address_pairs"
+}
+
+func removeAllowedAddressPairURL(c *gophercloud.ServiceClient, id string) string {
+	return resourceURL(c, id) + "/remove_allowed_address_pairs"
+}

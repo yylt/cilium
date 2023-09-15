@@ -206,3 +206,55 @@ func Delete(c *gophercloud.ServiceClient, id string) (r DeleteResult) {
 	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
+
+// AddAllowedAddressPair accepts a UpdateOpts struct and updates an existing port using the
+// values provided.
+func AddAllowedAddressPair(c *gophercloud.ServiceClient, id string, opts UpdateOptsBuilder) (r UpdateResult) {
+	b, err := opts.ToPortUpdateMap()
+	if err != nil {
+		r.Err = err
+		return
+	}
+	h, err := gophercloud.BuildHeaders(opts)
+	if err != nil {
+		r.Err = err
+		return
+	}
+	for k := range h {
+		if k == "If-Match" {
+			h[k] = fmt.Sprintf("revision_number=%s", h[k])
+		}
+	}
+	resp, err := c.Put(addAllowedAddressPairURL(c, id), b, &r.Body, &gophercloud.RequestOpts{
+		MoreHeaders: h,
+		OkCodes:     []int{200, 201},
+	})
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
+	return
+}
+
+// RemoveAllowedAddressPair accepts a UpdateOpts struct and updates an existing port using the
+// values provided.
+func RemoveAllowedAddressPair(c *gophercloud.ServiceClient, id string, opts UpdateOptsBuilder) (r UpdateResult) {
+	b, err := opts.ToPortUpdateMap()
+	if err != nil {
+		r.Err = err
+		return
+	}
+	h, err := gophercloud.BuildHeaders(opts)
+	if err != nil {
+		r.Err = err
+		return
+	}
+	for k := range h {
+		if k == "If-Match" {
+			h[k] = fmt.Sprintf("revision_number=%s", h[k])
+		}
+	}
+	resp, err := c.Put(removeAllowedAddressPairURL(c, id), b, &r.Body, &gophercloud.RequestOpts{
+		MoreHeaders: h,
+		OkCodes:     []int{200, 201},
+	})
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
+	return
+}

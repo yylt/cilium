@@ -368,8 +368,6 @@ func (c *Client) AssignPrivateIPAddresses(ctx context.Context, eniID string, toA
 	}
 
 	var addresses []string
-	allowedAddressPairs := port.AllowedAddressPairs
-
 	for i := 0; i < toAllocate; i++ {
 		opt := PortCreateOpts{
 			Name:        fmt.Sprintf(PodInterfaceName+"-%s", randomString(10)),
@@ -385,10 +383,12 @@ func (c *Client) AssignPrivateIPAddresses(ctx context.Context, eniID string, toA
 			return addresses, err
 		}
 
-		addresses = append(addresses, p.IP)
-		allowedAddressPairs = append(allowedAddressPairs, ports.AddressPair{IPAddress: p.IP})
-
-		err = c.updatePortAllowedAddressPairs(eniID, allowedAddressPairs)
+		err = c.addPortAllowedAddressPairs(eniID, []ports.AddressPair{
+			{
+				IPAddress:  p.IP,
+				MACAddress: port.MACAddress,
+			},
+		})
 		if err != nil {
 			log.Errorf("######## Failed to update port allowed-address-pairs with error: %+v", err)
 			err = c.deletePort(p.ID)
@@ -397,6 +397,7 @@ func (c *Client) AssignPrivateIPAddresses(ctx context.Context, eniID string, toA
 			}
 			return addresses, err
 		}
+		addresses = append(addresses, p.IP)
 	}
 
 	return addresses, nil
@@ -426,7 +427,7 @@ func (c *Client) UnassignPrivateIPAddresses(ctx context.Context, eniID string, a
 				break
 			}
 		}
-		if !release {
+		if release {
 			allowedAddressPairs = append(allowedAddressPairs, pair)
 		}
 	}
@@ -437,7 +438,7 @@ func (c *Client) UnassignPrivateIPAddresses(ctx context.Context, eniID string, a
 
 	log.Errorf("########### origin pairs is %s, new pairs is %s, expected is %s, actual is %s", port.AllowedAddressPairs, allowedAddressPairs, addresses, releasedIP)
 
-	err = c.updatePortAllowedAddressPairs(eniID, allowedAddressPairs)
+	err = c.deletePortAllowedAddressPairs(eniID, allowedAddressPairs)
 	if err != nil {
 		log.Errorf("######## Failed to update port allowed-address-pairs with error: %+v", err)
 		if err != nil {
@@ -467,6 +468,32 @@ func (c Client) updatePortAllowedAddressPairs(eniID string, pairs []ports.Addres
 		AllowedAddressPairs: &pairs,
 	}
 	port, err := ports.Update(c.neutronV2, eniID, opts).Extract()
+	if err != nil {
+		return err
+	}
+	log.Errorf("######## port updated is: %+v", port)
+	return nil
+}
+
+// addPortAllowedAddressPairs to assign secondary ip address
+func (c Client) addPortAllowedAddressPairs(eniID string, pairs []ports.AddressPair) error {
+	opts := ports.UpdateOpts{
+		AllowedAddressPairs: &pairs,
+	}
+	port, err := ports.AddAllowedAddressPair(c.neutronV2, eniID, opts).Extract()
+	if err != nil {
+		return err
+	}
+	log.Errorf("######## port updated is: %+v", port)
+	return nil
+}
+
+// deletePortAllowedAddressPairs to assign secondary ip address
+func (c Client) deletePortAllowedAddressPairs(eniID string, pairs []ports.AddressPair) error {
+	opts := ports.UpdateOpts{
+		AllowedAddressPairs: &pairs,
+	}
+	port, err := ports.RemoveAllowedAddressPair(c.neutronV2, eniID, opts).Extract()
 	if err != nil {
 		return err
 	}
@@ -708,11 +735,13 @@ func (c *Client) UnassignPrivateIPAddressesRetainPort(ctx context.Context, eniID
 	if idx == -1 {
 		return errors.New(fmt.Sprintf("no address found attached in eni %v", eniID))
 	}
-	newAllowedAddressPairs := make([]ports.AddressPair, 0, len(port.AllowedAddressPairs)-1)
-	newAllowedAddressPairs = append(newAllowedAddressPairs, port.AllowedAddressPairs[:idx]...)
-	newAllowedAddressPairs = append(newAllowedAddressPairs, port.AllowedAddressPairs[idx+1:]...)
 
-	err = c.updatePortAllowedAddressPairs(eniID, newAllowedAddressPairs)
+	err = c.deletePortAllowedAddressPairs(eniID, []ports.AddressPair{
+		{
+			IPAddress:  address[0],
+			MACAddress: port.MACAddress,
+		},
+	})
 	if err != nil {
 		log.Errorf("failed to update port allowed-address-pairs with error: %v", err)
 		return err
@@ -767,10 +796,12 @@ func (c *Client) AssignStaticPrivateIPAddresses(ctx context.Context, eniID strin
 			return nil
 		}
 	}
-	var allowedAddressPairs []ports.AddressPair
-	allowedAddressPairs = append(allowedAddressPairs, port.AllowedAddressPairs...)
-	allowedAddressPairs = append(allowedAddressPairs, ports.AddressPair{IPAddress: address})
-	err = c.updatePortAllowedAddressPairs(eniID, allowedAddressPairs)
+	err = c.addPortAllowedAddressPairs(eniID, []ports.AddressPair{
+		{
+			IPAddress:  address,
+			MACAddress: port.MACAddress,
+		},
+	})
 	if err != nil {
 		log.Errorf("######## Failed to update port allowed-address-pairs with error: %+v", err)
 		return err
