@@ -418,15 +418,17 @@ func (n *Node) ReleaseIPs(ctx context.Context, r *ipam.ReleaseAction) error {
 		return err
 	}
 	if isEmpty {
-		err = n.manager.api.DeleteNetworkInterface(ctx, r.InterfaceID)
-		if err != nil {
-			return err
-		}
 
 		err = n.manager.api.DetachNetworkInterface(ctx, n.instanceID, r.InterfaceID)
 		if err != nil {
 			return err
 		}
+
+		err = n.manager.api.DeleteNetworkInterface(ctx, r.InterfaceID)
+		if err != nil {
+			return err
+		}
+
 	}
 
 	return nil
@@ -642,7 +644,7 @@ func (n *Node) ResyncInterfacesAndIPsByPool(ctx context.Context, scopedLog *logr
 
 func (n *Node) AllocateStaticIP(ctx context.Context, address string, interfaceId string, pool ipam.Pool) error {
 	log.Infof("@@@@@@@@@@@@@@@@@@@ Do Allocate static IP..... %v", address)
-	
+
 	n.ifaceMutex.Lock()
 	err := n.manager.api.AssignStaticPrivateIPAddresses(ctx, interfaceId, address)
 	n.ifaceMutex.Unlock()

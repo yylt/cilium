@@ -82,6 +82,9 @@ func (ipam *IPAM) allocateIP(ip net.IP, owner string, pool Pool, needSyncUpstrea
 
 	if ownedBy, ok := ipam.isIPExcluded(ip, pool); ok {
 
+		// cmd.restoreOldEndpoints reallocate ip from data path when cilium agent restarts,
+		// ipam.WithStaticIPManager will exclude all csip when agent cell starts,
+		// so it is necessary to add a judgement to let the csip pod start normally
 		if ownedBy != owner {
 			if ownedBy+" [restored]" != owner {
 				err = fmt.Errorf("IP %s is excluded, owned by %s", ip, ownedBy)

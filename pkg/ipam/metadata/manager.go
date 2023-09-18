@@ -5,6 +5,7 @@ package metadata
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -25,8 +26,10 @@ var (
 )
 
 const (
-	// defaultCSIPRetainTime represent default retention time of CSIP, the value is 1h.
-	defaultCSIPRetainTime = 60 * 60
+	// defaultCSIPRetainTime represent default retention time of CSIP, the value is infinite.
+	// On a 32-bit system, this is approximately 68 years
+	// On a 64-bit system, this is approximately 2924712086 years
+	defaultCSIPRetainTime = math.MaxInt
 )
 
 type ManagerStoppedError struct{}
