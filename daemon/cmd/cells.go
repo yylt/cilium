@@ -21,6 +21,7 @@ import (
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/hive/job"
 	ipamMetadata "github.com/cilium/cilium/pkg/ipam/metadata"
+	"github.com/cilium/cilium/pkg/ipam/staticip"
 	"github.com/cilium/cilium/pkg/k8s"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/l2announcer"
@@ -136,6 +137,8 @@ var (
 
 		// IPAM metadata manager, determines which IPAM pool a pod should allocate from
 		ipamMetadata.Cell,
+
+		staticip.Cell,
 
 		// Egress Gateway allows originating traffic from specific IPv4 addresses.
 		egressgateway.Cell,

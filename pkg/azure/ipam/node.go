@@ -5,6 +5,7 @@ package ipam
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/sirupsen/logrus"
@@ -34,6 +35,26 @@ type Node struct {
 	manager *InstancesManager
 }
 
+func (n *Node) ResyncInterfacesAndIPsByPool(ctx context.Context, scopedLog *logrus.Entry) (poolAvailable map[ipam.Pool]ipamTypes.AllocationMap, stats stats.InterfaceStats, err error) {
+	return poolAvailable, stats, errors.New("ResyncInterfacesAndIPsByPool function for Azure ENI is not supported")
+}
+
+func (n *Node) GetPoolUsedIPWithPrefixes(pool string) int {
+	return 0
+}
+
+func (n *Node) AllocateStaticIP(ctx context.Context, address string, interfaceId string, pool ipam.Pool) error {
+	return errors.New("AllocateStaticIP function for Azure ENI is not supported")
+}
+
+func (n *Node) UnbindStaticIP(ctx context.Context, release *ipam.ReleaseAction, pool string) error {
+	return errors.New("UnbindStaticIP function for Azure ENI is not supported")
+}
+
+func (n *Node) ReleaseStaticIP(address string, pool string) error {
+	return errors.New("ReleaseStaticIP function for Azure ENI is not supported")
+}
+
 // UpdatedNode is called when an update to the CiliumNode is received.
 func (n *Node) UpdatedNode(obj *v2.CiliumNode) {
 	n.k8sObj = obj
@@ -56,7 +77,7 @@ func (n *Node) PopulateStatusFields(k8sObj *v2.CiliumNode) {
 }
 
 // PrepareIPRelease prepares the release of IPs
-func (n *Node) PrepareIPRelease(excessIPs int, scopedLog *logrus.Entry) *ipam.ReleaseAction {
+func (n *Node) PrepareIPRelease(excessIPs int, scopedLog *logrus.Entry, pool ipam.Pool) *ipam.ReleaseAction {
 	return &ipam.ReleaseAction{}
 }
 
@@ -66,7 +87,7 @@ func (n *Node) ReleaseIPs(ctx context.Context, r *ipam.ReleaseAction) error {
 }
 
 // PrepareIPAllocation returns the number of IPs that can be allocated/created.
-func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (a *ipam.AllocationAction, err error) {
+func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry, pool ipam.Pool) (a *ipam.AllocationAction, err error) {
 	a = &ipam.AllocationAction{}
 	requiredIfaceName := n.k8sObj.Spec.Azure.InterfaceName
 	n.manager.mutex.RLock()
@@ -117,7 +138,7 @@ func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (a *ipam.AllocationA
 }
 
 // AllocateIPs performs the Azure IP allocation operation
-func (n *Node) AllocateIPs(ctx context.Context, a *ipam.AllocationAction) error {
+func (n *Node) AllocateIPs(ctx context.Context, a *ipam.AllocationAction, pool ipam.Pool) error {
 	iface, ok := a.Interface.Resource.(*types.AzureInterface)
 	if !ok {
 		return fmt.Errorf("invalid interface object")
@@ -132,7 +153,7 @@ func (n *Node) AllocateIPs(ctx context.Context, a *ipam.AllocationAction) error 
 
 // CreateInterface is called to create a new interface. This operation is
 // currently not supported on Azure.
-func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationAction, scopedLog *logrus.Entry) (int, string, error) {
+func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationAction, scopedLog *logrus.Entry, pool ipam.Pool) (int, string, error) {
 	return 0, "", fmt.Errorf("not implemented")
 }
 

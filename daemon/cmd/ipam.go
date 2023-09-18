@@ -562,9 +562,12 @@ func (d *Daemon) startIPAM() {
 	bootstrapStats.ipam.Start()
 	log.Info("Initializing node addressing")
 	// Set up ipam conf after init() because we might be running d.conf.KVStoreIPv4Registration
-	d.ipam = ipam.NewIPAM(d.datapath.LocalNodeAddressing(), option.Config, d.nodeDiscovery, d.k8sWatcher, &d.mtuConfig, d.clientset)
+	d.ipam = ipam.NewIPAM(d.datapath.LocalNodeAddressing(), option.Config, d.nodeDiscovery, d.k8sWatcher, &d.mtuConfig, d.clientset, d.staticIPManager)
 	if d.ipamMetadata != nil {
 		d.ipam.WithMetadata(d.ipamMetadata)
+	}
+	if d.staticIPManager != nil {
+		d.ipam.WithStaticIPManager(d.staticIPManager)
 	}
 	bootstrapStats.ipam.End(true)
 }

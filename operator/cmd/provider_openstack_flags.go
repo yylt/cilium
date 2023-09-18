@@ -21,6 +21,8 @@ func init() {
 	option.BindEnv(Vp, operatorOption.OpenStackProjectID)
 	flags.Bool(operatorOption.OpenStackReleaseExcessIPs, true, "Enable releasing excess free IP addresses from OpenStack.")
 	option.BindEnv(Vp, operatorOption.OpenStackReleaseExcessIPs)
+	flags.String(operatorOption.OpenStackDefaultSubnetID, "", "Specific subnet ID for OpenStack to create default pool")
+	option.BindEnv(Vp, operatorOption.OpenStackDefaultSubnetID)
 
 	Vp.BindPFlags(flags)
 }

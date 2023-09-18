@@ -105,3 +105,11 @@ func (m *InstancesManager) DeleteInstance(instanceID string) {
 	defer m.mutex.Unlock()
 	m.instances.Delete(instanceID)
 }
+
+func (m *InstancesManager) ExcludeIP(ip string) {
+	log.Errorf("ExcludeIP function for Azure ENI is not supported.")
+}
+
+func (m *InstancesManager) IncludeIP(ip string) {
+	log.Errorf("IncludeIP function for Azure ENI is not supported.")
+}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/cilium/cilium/pkg/ipam/staticip"
 	"net"
 	"reflect"
 	"strconv"
@@ -21,8 +22,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/cache"
 
-	alibabaCloud "github.com/cilium/cilium/pkg/alibabacloud/utils"
 	openStack "github.com/cilium/cilium/pkg/openstack/utils"
+
+	alibabaCloud "github.com/cilium/cilium/pkg/alibabacloud/utils"
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/ip"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
@@ -45,6 +47,9 @@ var (
 
 const (
 	fieldName = "name"
+
+	customPool = "ipam.cilium.io/ip-pool"
+	ipRecycle  = "eaystack.io/vpc-ip-claim-delete-policy"
 )
 
 // nodeStore represents a CiliumNode custom resource and binds the CR to a list
@@ -75,11 +80,15 @@ type nodeStore struct {
 
 	conf      Configuration
 	mtuConfig MtuConfiguration
+
+	ipsToPool map[string]string
+
+	csipMgr *staticip.Manager
 }
 
 // newNodeStore initializes a new store which reflects the CiliumNode custom
 // resource of the specified node name
-func newNodeStore(nodeName string, conf Configuration, owner Owner, clientset client.Clientset, k8sEventReg K8sEventRegister, mtuConfig MtuConfiguration) *nodeStore {
+func newNodeStore(nodeName string, conf Configuration, owner Owner, clientset client.Clientset, k8sEventReg K8sEventRegister, mtuConfig MtuConfiguration, csipMgr *staticip.Manager) *nodeStore {
 	log.WithField(fieldName, nodeName).Info("Subscribed to CiliumNode custom resource")
 
 	store := &nodeStore{
@@ -88,7 +97,13 @@ func newNodeStore(nodeName string, conf Configuration, owner Owner, clientset cl
 		conf:               conf,
 		mtuConfig:          mtuConfig,
 		clientset:          clientset,
+		ipsToPool:          map[string]string{},
 	}
+
+	if csipMgr != nil {
+		store.csipMgr = csipMgr
+	}
+
 	store.restoreFinished = make(chan struct{})
 
 	t, err := trigger.NewTrigger(trigger.Parameters{
@@ -320,9 +335,40 @@ func (n *nodeStore) hasMinimumIPsInPool() (minimumReached bool, required, numAva
 			minimumReached = true
 		}
 
-		if n.conf.IPAMMode() == ipamOption.IPAMENI || n.conf.IPAMMode() == ipamOption.IPAMAzure || n.conf.IPAMMode() == ipamOption.IPAMAlibabaCloud || n.conf.IPAMMode() == ipamOption.IPAMOpenStack{
+		if n.conf.IPAMMode() == ipamOption.IPAMENI || n.conf.IPAMMode() == ipamOption.IPAMAzure || n.conf.IPAMMode() == ipamOption.IPAMAlibabaCloud || n.conf.IPAMMode() == ipamOption.IPAMOpenStack {
 			if !n.autoDetectIPv4NativeRoutingCIDR() {
 				minimumReached = false
+			}
+
+			if len(n.ownNode.Spec.IPAM.CrdPools) > 0 {
+				poolMinimumReached := true
+				for _, pool := range n.ownNode.Spec.IPAM.CrdPools {
+					if len(pool) < required {
+						poolMinimumReached = false
+					}
+				}
+				if poolMinimumReached {
+					minimumReached = true
+				}
+			}
+		}
+	}
+	if n.ownNode.Spec.IPAM.CrdPools != nil {
+		if n.conf.IPAMMode() == ipamOption.IPAMOpenStack {
+			if !n.autoDetectIPv4NativeRoutingCIDR() {
+				minimumReached = false
+			}
+
+			if len(n.ownNode.Spec.IPAM.CrdPools) > 0 {
+				poolMinimumReached := true
+				for _, pool := range n.ownNode.Spec.IPAM.CrdPools {
+					if len(pool) < required {
+						poolMinimumReached = false
+					}
+				}
+				if poolMinimumReached {
+					minimumReached = true
+				}
 			}
 		}
 	}
@@ -375,86 +421,89 @@ func (n *nodeStore) updateLocalNodeResource(node *ciliumv2.CiliumNode) {
 	releaseUpstreamSyncNeeded := false
 	// ACK or NACK IPs marked for release by the operator
 	for ip, status := range n.ownNode.Status.IPAM.ReleaseIPs {
-		if n.ownNode.Spec.IPAM.Pool == nil {
+		if n.ownNode.Spec.IPAM.CrdPools == nil {
 			continue
 		}
 		// Ignore states that agent previously responded to.
 		if status == ipamOption.IPAMReadyForRelease || status == ipamOption.IPAMDoNotRelease {
 			continue
 		}
-		if _, ok := n.ownNode.Spec.IPAM.Pool[ip]; !ok {
-			if status == ipamOption.IPAMReleased {
-				// Remove entry from release-ips only when it is removed from .spec.ipam.pool as well
-				delete(n.ownNode.Status.IPAM.ReleaseIPs, ip)
-				releaseUpstreamSyncNeeded = true
+		if p, ok := n.ipsToPool[ip]; ok {
+			if _, ok := n.ownNode.Spec.IPAM.CrdPools[p][ip]; !ok {
+				if status == ipamOption.IPAMReleased {
+					// Remove entry from release-ips only when it is removed from .spec.ipam.pool as well
+					delete(n.ownNode.Status.IPAM.ReleaseIPs, ip)
+					releaseUpstreamSyncNeeded = true
 
-				// Remove the unreachable route for this IP
-				if n.conf.UnreachableRoutesEnabled() {
-					parsedIP := net.ParseIP(ip)
-					if parsedIP == nil {
-						// Unable to parse IP, no point in trying to remove the route
-						log.Warningf("Unable to parse IP %s", ip)
-						continue
-					}
+					// Remove the unreachable route for this IP
+					if n.conf.UnreachableRoutesEnabled() {
+						parsedIP := net.ParseIP(ip)
+						if parsedIP == nil {
+							// Unable to parse IP, no point in trying to remove the route
+							log.Warningf("Unable to parse IP %s", ip)
+							continue
+						}
 
-					err := netlink.RouteDel(&netlink.Route{
-						Dst:   &net.IPNet{IP: parsedIP, Mask: net.CIDRMask(32, 32)},
-						Table: unix.RT_TABLE_MAIN,
-						Type:  unix.RTN_UNREACHABLE,
-					})
-					if err != nil && !errors.Is(err, unix.ESRCH) {
-						// We ignore ESRCH, as it means the entry was already deleted
-						log.WithError(err).Warningf("Unable to delete unreachable route for IP %s", ip)
-						continue
+						err := netlink.RouteDel(&netlink.Route{
+							Dst:   &net.IPNet{IP: parsedIP, Mask: net.CIDRMask(32, 32)},
+							Table: unix.RT_TABLE_MAIN,
+							Type:  unix.RTN_UNREACHABLE,
+						})
+						if err != nil && !errors.Is(err, unix.ESRCH) {
+							// We ignore ESRCH, as it means the entry was already deleted
+							log.WithError(err).Warningf("Unable to delete unreachable route for IP %s", ip)
+							continue
+						}
 					}
+				} else if status == ipamOption.IPAMMarkForRelease {
+					// NACK the IP, if this node doesn't own the IP
+					n.ownNode.Status.IPAM.ReleaseIPs[ip] = ipamOption.IPAMDoNotRelease
+					releaseUpstreamSyncNeeded = true
 				}
-			} else if status == ipamOption.IPAMMarkForRelease {
-				// NACK the IP, if this node doesn't own the IP
+				continue
+			}
+
+			// Ignore all other states, transition to do-not-release and ready-for-release are allowed only from
+			// marked-for-release
+			if status != ipamOption.IPAMMarkForRelease {
+				continue
+			}
+			// Retrieve the appropriate allocator
+			var allocator *crdAllocator
+			var ipFamily Family
+			if ipAddr := net.ParseIP(ip); ipAddr != nil {
+				ipFamily = DeriveFamily(ipAddr)
+			}
+			if ipFamily == "" {
+				continue
+			}
+			for _, a := range n.allocators {
+				if a.family == ipFamily {
+					allocator = a
+				}
+			}
+			if allocator == nil {
+				continue
+			}
+
+			// Some functions like crdAllocator.Allocate() acquire lock on allocator first and then on nodeStore.
+			// So release nodestore lock before acquiring allocator lock to avoid potential deadlocks from inconsistent
+			// lock ordering.
+			n.mutex.Unlock()
+			allocator.mutex.Lock()
+			if _, ok = allocator.poolAllocated[p]; ok {
+				_, ok = allocator.poolAllocated[p][ip]
+			}
+			allocator.mutex.Unlock()
+			n.mutex.Lock()
+			if ok {
+				// IP still in use, update the operator to stop releasing the IP.
 				n.ownNode.Status.IPAM.ReleaseIPs[ip] = ipamOption.IPAMDoNotRelease
-				releaseUpstreamSyncNeeded = true
+			} else {
+				n.ownNode.Status.IPAM.ReleaseIPs[ip] = ipamOption.IPAMReadyForRelease
 			}
-			continue
+			releaseUpstreamSyncNeeded = true
 		}
-
-		// Ignore all other states, transition to do-not-release and ready-for-release are allowed only from
-		// marked-for-release
-		if status != ipamOption.IPAMMarkForRelease {
-			continue
-		}
-		// Retrieve the appropriate allocator
-		var allocator *crdAllocator
-		var ipFamily Family
-		if ipAddr := net.ParseIP(ip); ipAddr != nil {
-			ipFamily = DeriveFamily(ipAddr)
-		}
-		if ipFamily == "" {
-			continue
-		}
-		for _, a := range n.allocators {
-			if a.family == ipFamily {
-				allocator = a
-			}
-		}
-		if allocator == nil {
-			continue
-		}
-
-		// Some functions like crdAllocator.Allocate() acquire lock on allocator first and then on nodeStore.
-		// So release nodestore lock before acquiring allocator lock to avoid potential deadlocks from inconsistent
-		// lock ordering.
-		n.mutex.Unlock()
-		allocator.mutex.Lock()
-		_, ok := allocator.allocated[ip]
-		allocator.mutex.Unlock()
-		n.mutex.Lock()
-
-		if ok {
-			// IP still in use, update the operator to stop releasing the IP.
-			n.ownNode.Status.IPAM.ReleaseIPs[ip] = ipamOption.IPAMDoNotRelease
-		} else {
-			n.ownNode.Status.IPAM.ReleaseIPs[ip] = ipamOption.IPAMReadyForRelease
-		}
-		releaseUpstreamSyncNeeded = true
 	}
 
 	if releaseUpstreamSyncNeeded {
@@ -497,15 +546,27 @@ func (n *nodeStore) refreshNode() error {
 	copy(staleCopyOfAllocators, n.allocators)
 	n.mutex.RUnlock()
 
-	node.Status.IPAM.Used = ipamTypes.AllocationMap{}
+	node.Status.IPAM.PoolUsed = map[string]ipamTypes.AllocationMap{}
 
 	for _, a := range staleCopyOfAllocators {
 		a.mutex.RLock()
-		for ip, ipInfo := range a.allocated {
-			node.Status.IPAM.Used[ip] = ipInfo
+		for _, allocationMap := range a.poolAllocated {
+			for ip, ipInfo := range allocationMap {
+				if node.Status.IPAM.PoolUsed[ipInfo.Pool] == nil {
+					node.Status.IPAM.PoolUsed[ipInfo.Pool] = map[string]ipamTypes.AllocationIP{}
+				}
+				node.Status.IPAM.PoolUsed[ipInfo.Pool][ip] = ipInfo
+			}
 		}
 		a.mutex.RUnlock()
 	}
+	m := make(map[string]string)
+	for p, allocationMap := range node.Spec.IPAM.CrdPools {
+		for ip, _ := range allocationMap {
+			m[ip] = p
+		}
+	}
+	n.ipsToPool = m
 
 	var err error
 	_, err = n.clientset.CiliumV2().CiliumNodes().UpdateStatus(context.TODO(), node, metav1.UpdateOptions{})
@@ -521,7 +582,7 @@ func (n *nodeStore) addAllocator(allocator *crdAllocator) {
 }
 
 // allocate checks if a particular IP can be allocated or return an error
-func (n *nodeStore) allocate(ip net.IP) (*ipamTypes.AllocationIP, error) {
+func (n *nodeStore) allocate(ip net.IP, pool Pool) (*ipamTypes.AllocationIP, error) {
 	n.mutex.RLock()
 	defer n.mutex.RUnlock()
 
@@ -529,7 +590,7 @@ func (n *nodeStore) allocate(ip net.IP) (*ipamTypes.AllocationIP, error) {
 		return nil, fmt.Errorf("CiliumNode for own node is not available")
 	}
 
-	if n.ownNode.Spec.IPAM.Pool == nil {
+	if n.ownNode.Spec.IPAM.CrdPools[pool.String()] == nil {
 		return nil, fmt.Errorf("No IPs available")
 	}
 
@@ -537,10 +598,12 @@ func (n *nodeStore) allocate(ip net.IP) (*ipamTypes.AllocationIP, error) {
 		return nil, fmt.Errorf("IP not available, marked or ready for release")
 	}
 
-	ipInfo, ok := n.ownNode.Spec.IPAM.Pool[ip.String()]
+	ipInfo, ok := n.ownNode.Spec.IPAM.CrdPools[pool.String()][ip.String()]
 	if !ok {
 		return nil, NewIPNotAvailableInPoolError(ip)
 	}
+
+	ipInfo.Pool = pool.String()
 
 	return &ipInfo, nil
 }
@@ -559,17 +622,25 @@ func (n *nodeStore) isIPInReleaseHandshake(ip string) bool {
 }
 
 // allocateNext allocates the next available IP or returns an error
-func (n *nodeStore) allocateNext(allocated ipamTypes.AllocationMap, family Family, owner string) (net.IP, *ipamTypes.AllocationIP, error) {
+func (n *nodeStore) allocateNext(poolAllocated map[string]ipamTypes.AllocationMap, family Family, owner string, pool Pool) (net.IP, *ipamTypes.AllocationIP, error) {
 	n.mutex.RLock()
 	defer n.mutex.RUnlock()
 
 	if n.ownNode == nil {
 		return nil, nil, fmt.Errorf("CiliumNode for own node is not available")
 	}
+	var allocate ipamTypes.AllocationMap
+	allocated := poolAllocated[pool.String()]
+
+	if n.ownNode.Spec.IPAM.CrdPools != nil && n.ownNode.Spec.IPAM.CrdPools[pool.String()] != nil {
+		allocate = n.ownNode.Spec.IPAM.CrdPools[pool.String()]
+	} else {
+		allocate = n.ownNode.Spec.IPAM.Pool
+	}
 
 	// Check if IP has a custom owner (only supported in manual CRD mode)
 	if n.conf.IPAMMode() == ipamOption.IPAMCRD && len(owner) != 0 {
-		for ip, ipInfo := range n.ownNode.Spec.IPAM.Pool {
+		for ip, ipInfo := range allocate {
 			if ipInfo.Owner == owner {
 				parsedIP := net.ParseIP(ip)
 				if parsedIP == nil {
@@ -589,7 +660,7 @@ func (n *nodeStore) allocateNext(allocated ipamTypes.AllocationMap, family Famil
 
 	// FIXME: This is currently using a brute-force method that can be
 	// optimized
-	for ip, ipInfo := range n.ownNode.Spec.IPAM.Pool {
+	for ip, ipInfo := range allocate {
 		if _, ok := allocated[ip]; !ok {
 
 			if n.isIPInReleaseHandshake(ip) {
@@ -607,9 +678,18 @@ func (n *nodeStore) allocateNext(allocated ipamTypes.AllocationMap, family Famil
 				continue
 			}
 
+			if n.csipMgr != nil {
+				if ownerBy, isCsip := n.csipMgr.IsCSIPAddress(ip); isCsip {
+					if ownerBy != owner {
+						continue
+					}
+				}
+			}
+
 			if DeriveFamily(parsedIP) != family {
 				continue
 			}
+			ipInfo.Pool = pool.String()
 
 			return parsedIP, &ipInfo, nil
 		}
@@ -641,6 +721,8 @@ type crdAllocator struct {
 	// represented as string
 	allocated ipamTypes.AllocationMap
 
+	poolAllocated map[string]ipamTypes.AllocationMap
+
 	// family is the address family this allocator is allocator for
 	family Family
 
@@ -648,16 +730,17 @@ type crdAllocator struct {
 }
 
 // newCRDAllocator creates a new CRD-backed IP allocator
-func newCRDAllocator(family Family, c Configuration, owner Owner, clientset client.Clientset, k8sEventReg K8sEventRegister, mtuConfig MtuConfiguration) Allocator {
+func newCRDAllocator(family Family, c Configuration, owner Owner, clientset client.Clientset, k8sEventReg K8sEventRegister, mtuConfig MtuConfiguration, csipMgr *staticip.Manager) Allocator {
 	initNodeStore.Do(func() {
-		sharedNodeStore = newNodeStore(nodeTypes.GetName(), c, owner, clientset, k8sEventReg, mtuConfig)
+		sharedNodeStore = newNodeStore(nodeTypes.GetName(), c, owner, clientset, k8sEventReg, mtuConfig, csipMgr)
 	})
 
 	allocator := &crdAllocator{
-		allocated: ipamTypes.AllocationMap{},
-		family:    family,
-		store:     sharedNodeStore,
-		conf:      c,
+		allocated:     ipamTypes.AllocationMap{},
+		family:        family,
+		store:         sharedNodeStore,
+		conf:          c,
+		poolAllocated: map[string]ipamTypes.AllocationMap{},
 	}
 
 	sharedNodeStore.addAllocator(allocator)
@@ -771,6 +854,7 @@ func (a *crdAllocator) buildAllocationResult(ip net.IP, ipInfo *ipamTypes.Alloca
 					result.GatewayIP = deriveGatewayIP(eni.Subnet.CIDR, 1)
 				}
 				result.InterfaceNumber = strconv.Itoa(openStack.GetENIIndexFromTags(eni.Tags))
+				result.IPPoolName = Pool(ipInfo.Pool)
 				return
 			}
 		}
@@ -788,12 +872,19 @@ func (a *crdAllocator) buildAllocationResult(ip net.IP, ipInfo *ipamTypes.Alloca
 func (a *crdAllocator) Allocate(ip net.IP, owner string, pool Pool) (*AllocationResult, error) {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
-
-	if _, ok := a.allocated[ip.String()]; ok {
-		return nil, fmt.Errorf("IP already in use")
+	if a.poolAllocated[pool.String()] == nil {
+		return nil, fmt.Errorf("IP Pool unexist")
 	}
 
-	ipInfo, err := a.store.allocate(ip)
+	if am, ok := a.poolAllocated[pool.String()][ip.String()]; ok {
+		if am.Owner != owner {
+			if am.Owner+" [restored]" != owner {
+				return nil, fmt.Errorf("IP already in use")
+			}
+		}
+	}
+
+	ipInfo, err := a.store.allocate(ip, pool)
 	if err != nil {
 		return nil, err
 	}
@@ -818,11 +909,15 @@ func (a *crdAllocator) AllocateWithoutSyncUpstream(ip net.IP, owner string, pool
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
-	if _, ok := a.allocated[ip.String()]; ok {
-		return nil, fmt.Errorf("IP already in use")
+	if am, ok := a.poolAllocated[pool.String()][ip.String()]; ok {
+		if am.Owner != owner {
+			if am.Owner+" [restored]" != owner {
+				return nil, fmt.Errorf("IP already in use")
+			}
+		}
 	}
 
-	ipInfo, err := a.store.allocate(ip)
+	ipInfo, err := a.store.allocate(ip, pool)
 	if err != nil {
 		return nil, err
 	}
@@ -844,11 +939,11 @@ func (a *crdAllocator) Release(ip net.IP, pool Pool) error {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
-	if _, ok := a.allocated[ip.String()]; !ok {
+	if _, ok := a.poolAllocated[pool.String()][ip.String()]; !ok {
 		return fmt.Errorf("IP %s is not allocated", ip.String())
 	}
 
-	delete(a.allocated, ip.String())
+	delete(a.poolAllocated[pool.String()], ip.String())
 	// Update custom resource to reflect the newly released IP.
 	a.store.refreshTrigger.TriggerWithReason(fmt.Sprintf("release of IP %s", ip.String()))
 
@@ -858,7 +953,10 @@ func (a *crdAllocator) Release(ip net.IP, pool Pool) error {
 // markAllocated marks a particular IP as allocated
 func (a *crdAllocator) markAllocated(ip net.IP, owner string, ipInfo ipamTypes.AllocationIP) {
 	ipInfo.Owner = owner
-	a.allocated[ip.String()] = ipInfo
+	if a.poolAllocated[ipInfo.Pool] == nil {
+		a.poolAllocated[ipInfo.Pool] = map[string]ipamTypes.AllocationIP{}
+	}
+	a.poolAllocated[ipInfo.Pool][ip.String()] = ipInfo
 }
 
 // AllocateNext allocates the next available IP as offered by the custom
@@ -868,7 +966,7 @@ func (a *crdAllocator) AllocateNext(owner string, pool Pool) (*AllocationResult,
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
-	ip, ipInfo, err := a.store.allocateNext(a.allocated, a.family, owner)
+	ip, ipInfo, err := a.store.allocateNext(a.poolAllocated, a.family, owner, pool)
 	if err != nil {
 		return nil, err
 	}
@@ -892,7 +990,7 @@ func (a *crdAllocator) AllocateNextWithoutSyncUpstream(owner string, pool Pool) 
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
-	ip, ipInfo, err := a.store.allocateNext(a.allocated, a.family, owner)
+	ip, ipInfo, err := a.store.allocateNext(a.poolAllocated, a.family, owner, pool)
 	if err != nil {
 		return nil, err
 	}
@@ -913,8 +1011,10 @@ func (a *crdAllocator) Dump() (map[string]string, string) {
 	defer a.mutex.RUnlock()
 
 	allocs := map[string]string{}
-	for ip := range a.allocated {
-		allocs[ip] = ""
+	for _, allocationMap := range a.poolAllocated {
+		for ip := range allocationMap {
+			allocs[ip] = ""
+		}
 	}
 
 	status := fmt.Sprintf("%d/%d allocated", len(allocs), a.store.totalPoolSize(a.family))

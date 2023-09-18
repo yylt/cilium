@@ -31,6 +31,7 @@ rules:
   verbs:
   - list
   - watch
+  - update
 {{- end }}
 {{- if or .Values.operator.removeNodeTaints .Values.operator.setNodeNetworkStatus }}
 - apiGroups:
@@ -198,21 +199,26 @@ rules:
   - ciliumcidrgroups.cilium.io
   - ciliuml2announcementpolicies.cilium.io
   - ciliumpodippools.cilium.io
+  - ciliumstaticips.cilium.io
 - apiGroups:
   - cilium.io
   resources:
   - ciliumloadbalancerippools
   - ciliumpodippools
+  - ciliumstaticips
   verbs:
   - get
   - list
   - watch
+  - update
 - apiGroups:
     - cilium.io
   resources:
     - ciliumpodippools
+    - ciliumstaticips
   verbs:
     - create
+    - delete
 - apiGroups:
   - cilium.io
   resources:

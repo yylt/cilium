@@ -4,9 +4,9 @@
 package ipam
 
 import (
-	"net"
-
+	"github.com/cilium/cilium/pkg/ipam/staticip"
 	"github.com/sirupsen/logrus"
+	"net"
 
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/datapath/types"
@@ -104,10 +104,11 @@ type MtuConfiguration interface {
 
 type Metadata interface {
 	GetIPPoolForPod(owner string) (pool string, err error)
+	GetIPPolicyForPod(owner string) (string, int, error)
 }
 
 // NewIPAM returns a new IP address manager
-func NewIPAM(nodeAddressing types.NodeAddressing, c Configuration, owner Owner, k8sEventReg K8sEventRegister, mtuConfig MtuConfiguration, clientset client.Clientset) *IPAM {
+func NewIPAM(nodeAddressing types.NodeAddressing, c Configuration, owner Owner, k8sEventReg K8sEventRegister, mtuConfig MtuConfiguration, clientset client.Clientset, csipMgr *staticip.Manager) *IPAM {
 	ipam := &IPAM{
 		nodeAddressing:   nodeAddressing,
 		config:           c,
@@ -154,11 +155,11 @@ func NewIPAM(nodeAddressing types.NodeAddressing, c Configuration, owner Owner, 
 	case ipamOption.IPAMCRD, ipamOption.IPAMENI, ipamOption.IPAMAzure, ipamOption.IPAMAlibabaCloud, ipamOption.IPAMOpenStack:
 		log.Info("Initializing CRD-based IPAM")
 		if c.IPv6Enabled() {
-			ipam.IPv6Allocator = newCRDAllocator(IPv6, c, owner, clientset, k8sEventReg, mtuConfig)
+			ipam.IPv6Allocator = newCRDAllocator(IPv6, c, owner, clientset, k8sEventReg, mtuConfig, csipMgr)
 		}
 
 		if c.IPv4Enabled() {
-			ipam.IPv4Allocator = newCRDAllocator(IPv4, c, owner, clientset, k8sEventReg, mtuConfig)
+			ipam.IPv4Allocator = newCRDAllocator(IPv4, c, owner, clientset, k8sEventReg, mtuConfig, csipMgr)
 		}
 	case ipamOption.IPAMDelegatedPlugin:
 		log.Info("Initializing no-op IPAM since we're using a CNI delegated plugin")
@@ -233,4 +234,15 @@ func PoolOrDefault(pool string) Pool {
 		return PoolDefault
 	}
 	return Pool(pool)
+}
+
+// WithStaticIPManager set
+func (ipam *IPAM) WithStaticIPManager(m *staticip.Manager) {
+	ipam.staticIPManager = m
+
+	for _, csip := range m.ListStaticIPs() {
+		if ip := net.ParseIP(csip.Spec.IP).To4(); ip != nil {
+			ipam.ExcludeIP(ip, csip.Namespace+"/"+csip.Name, Pool(csip.Spec.Pool))
+		}
+	}
 }

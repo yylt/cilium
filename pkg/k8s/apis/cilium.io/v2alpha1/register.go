@@ -79,6 +79,11 @@ const (
 	CPIPPluralName     = "ciliumpodippools"
 	CPIPKindDefinition = "CiliumPodIPPool"
 	CPIPName           = CPIPPluralName + "." + CustomResourceDefinitionGroup
+
+	// CiliumStaticIP (CSIP)
+	CSIPPluralName     = "ciliumstaticips"
+	CSIPKindDefinition = "CiliumStaticIP"
+	CSIPName           = CSIPPluralName + "." + CustomResourceDefinitionGroup
 )
 
 // SchemeGroupVersion is group version used to register these objects
@@ -136,6 +141,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&CiliumL2AnnouncementPolicyList{},
 		&CiliumPodIPPool{},
 		&CiliumPodIPPoolList{},
+		&CiliumStaticIP{},
+		&CiliumStaticIPList{},
 	)
 
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)

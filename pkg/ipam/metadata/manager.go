@@ -5,6 +5,8 @@ package metadata
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -21,6 +23,13 @@ import (
 
 var (
 	log = logging.DefaultLogger.WithField(logfields.LogSubsys, "ipam-metadata-manager")
+)
+
+const (
+	// defaultCSIPRetainTime represent default retention time of CSIP, the value is infinite.
+	// On a 32-bit system, this is approximately 68 years
+	// On a 64-bit system, this is approximately 2924712086 years
+	defaultCSIPRetainTime = math.MaxInt
 )
 
 type ManagerStoppedError struct{}
@@ -134,4 +143,55 @@ func (m *Manager) GetIPPoolForPod(owner string) (pool string, err error) {
 
 	// Fallback to default pool
 	return ipamOption.PoolDefault, nil
+}
+
+func (m *Manager) GetIPPolicyForPod(owner string) (string, int, error) {
+	if m.namespaceStore == nil || m.podStore == nil {
+		return "", 0, &ManagerStoppedError{}
+	}
+
+	namespace, name, ok := splitK8sPodName(owner)
+	if !ok {
+		log.WithField("owner", owner).
+			Debug("IPAM metadata request for invalid pod name")
+		return "", 0, nil
+	}
+
+	// Check annotation on pod
+	pod, ok, err := m.podStore.GetByKey(resource.Key{
+		Name:      name,
+		Namespace: namespace,
+	})
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to lookup pod %q: %w", namespace+"/"+name, err)
+	} else if !ok {
+		return "", 0, &ResourceNotFound{Resource: "Pod", Namespace: namespace, Name: name}
+	} else {
+		isJudgeNeededPod := false
+		if pod.OwnerReferences == nil {
+			isJudgeNeededPod = true
+		} else if len(pod.OwnerReferences) > 0 {
+			for _, o := range pod.OwnerReferences {
+				if o.Kind == "StatefulSet" {
+					isJudgeNeededPod = true
+					break
+				}
+			}
+		}
+		if isJudgeNeededPod {
+			if policy, hasAnnotation := pod.Annotations[annotation.IPAMIPPolicyRetainKey]; hasAnnotation {
+				if t, hasAnnotation := pod.Annotations[annotation.IPAMIPPolicyRetainTime]; hasAnnotation {
+					time, err := strconv.Atoi(t)
+					if err != nil {
+						return policy, defaultCSIPRetainTime, nil
+					}
+					return policy, time, nil
+				} else {
+					return policy, defaultCSIPRetainTime, nil
+				}
+			}
+		}
+	}
+
+	return "", 0, nil
 }

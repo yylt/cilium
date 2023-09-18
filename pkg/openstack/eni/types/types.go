@@ -100,6 +100,10 @@ type ENI struct {
 	//
 	// +optional
 	Tags []string `json:"tags,omitempty"`
+
+	// +optional
+	// Pool is the owner of this ENI
+	Pool string `json:"pool,omitempty"`
 }
 
 // InterfaceID returns the identifier of the interface

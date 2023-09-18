@@ -6,6 +6,7 @@ package eni
 import (
 	"context"
 	eniTypes "github.com/cilium/cilium/pkg/openstack/eni/types"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/attachinterfaces"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -23,13 +24,17 @@ type OpenStackAPI interface {
 	GetSubnets(ctx context.Context) (ipamTypes.SubnetMap, error)
 	GetVpcs(ctx context.Context) (ipamTypes.VirtualNetworkMap, error)
 	GetSecurityGroups(ctx context.Context) (types.SecurityGroupMap, error)
-	CreateNetworkInterface(ctx context.Context, subnetID, netID, instanceID string, groups []string) (string, *eniTypes.ENI, error)
+	CreateNetworkInterface(ctx context.Context, subnetID, netID, instanceID string, groups []string, pool ipam.Pool) (string, *eniTypes.ENI, error)
 	DeleteNetworkInterface(ctx context.Context, eniID string) error
 	AttachNetworkInterface(ctx context.Context, instanceID, eniID string) error
 	DetachNetworkInterface(ctx context.Context, instanceID, eniID string) error
 	AssignPrivateIPAddresses(ctx context.Context, eniID string, toAllocate int) ([]string, error)
-	UnassignPrivateIPAddresses(ctx context.Context, eniID string, addresses []string) error
+	UnassignPrivateIPAddresses(ctx context.Context, eniID string, addresses []string) (isEmpty bool, err error)
 	AddTagToNetworkInterface(ctx context.Context, eniID string, tags string) error
+	UnassignPrivateIPAddressesRetainPort(ctx context.Context, eniID string, address []string) error
+	AssignStaticPrivateIPAddresses(ctx context.Context, eniID string, address string) error
+	DeleteNeutronPort(address string, networkID string) error
+	ListNetworkInterface(ctx context.Context, instanceID string) ([]attachinterfaces.Interface, error)
 }
 
 // InstancesManager maintains the list of instances. It must be kept up to date
@@ -41,13 +46,15 @@ type InstancesManager struct {
 	vpcs           ipamTypes.VirtualNetworkMap
 	securityGroups types.SecurityGroupMap
 	api            OpenStackAPI
+	excludeIPs     map[string]struct{}
 }
 
 // NewInstancesManager returns a new instances manager
 func NewInstancesManager(api OpenStackAPI) *InstancesManager {
 	return &InstancesManager{
-		instances: ipamTypes.NewInstanceMap(),
-		api:       api,
+		instances:  ipamTypes.NewInstanceMap(),
+		api:        api,
+		excludeIPs: map[string]struct{}{},
 	}
 }
 
@@ -119,6 +126,10 @@ func (m *InstancesManager) Resync(ctx context.Context) time.Time {
 	m.vpcs = vpcs
 	m.securityGroups = securityGroups
 	m.mutex.Unlock()
+
+	if subnets != nil {
+		ipam.SyncPoolToAPIServer(subnets)
+	}
 
 	return resyncStart
 }
@@ -212,4 +223,16 @@ func (m *InstancesManager) DeleteInstance(instanceID string) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	m.instances.Delete(instanceID)
+}
+
+func (m *InstancesManager) ExcludeIP(ip string) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.excludeIPs[ip] = struct{}{}
+}
+
+func (m *InstancesManager) IncludeIP(ip string) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	delete(m.excludeIPs, ip)
 }

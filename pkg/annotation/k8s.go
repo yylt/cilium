@@ -126,6 +126,14 @@ const (
 	// IPAMPoolKey is the annotation name used to store the IPAM pool name from
 	// which workloads should allocate their IP from
 	IPAMPoolKey = IPAMPrefix + "/ip-pool"
+
+	// IPAMIPPolicyRetainKey is the annotation name used to mark the pod to
+	// decide if the pod need cilium static ip
+	IPAMIPPolicyRetainKey = "cilium.io/csip-needed"
+
+	// IPAMIPPolicyRetainTime is the annotation name used to mark the pod to
+	// decide the cilium static ip recycle time
+	IPAMIPPolicyRetainTime = "cilium.io/csip-retain-time"
 )
 
 // Get returns the annotation value associated with the given key, or any of
