@@ -419,7 +419,7 @@ func (n *Node) ReleaseIPs(ctx context.Context, r *ipam.ReleaseAction) error {
 	}
 	if isEmpty {
 
-		err = n.manager.api.DetachNetworkInterface(ctx, n.instanceID, r.InterfaceID)
+		err = n.manager.api.DetachNetworkInterface(ctx, n.node.InstanceID(), r.InterfaceID)
 		if err != nil {
 			return err
 		}
