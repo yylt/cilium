@@ -10,6 +10,7 @@
 #define SKIP_POLICY_MAP	1
 #define SKIP_CALLS_MAP	1
 
+#include "bpf/helpers.h"
 #include "lib/common.h"
 #include "lib/lb.h"
 #include "lib/eps.h"
@@ -23,6 +24,16 @@
 
 #ifndef HOST_NETNS_COOKIE
 # define HOST_NETNS_COOKIE   get_netns_cookie(NULL)
+#endif
+
+static const __u32 ip_zero = 0;
+
+#ifndef OUT_REDIRECT_PORT
+#define OUT_REDIRECT_PORT 15001
+#endif
+
+#ifndef IN_REDIRECT_PORT
+#define IN_REDIRECT_PORT 15006
 #endif
 
 static __always_inline __maybe_unused bool is_v4_loopback(__be32 daddr)
@@ -285,6 +296,24 @@ sock4_skip_xlate_if_same_netns(struct bpf_sock_addr *ctx __maybe_unused,
 	return false;
 }
 
+static __always_inline __maybe_unused bool 
+is_port_listen_current_ns(void *ctx, __u32 ip, __u16 port)
+{
+
+    struct bpf_sock_tuple tuple = {
+		.ipv4.daddr = ip,
+		.ipv4.dport = bpf_htons(port),
+	};
+	struct bpf_sock *sk = NULL;
+    sk = sk_lookup_tcp(ctx, &tuple, sizeof(tuple.ipv4),
+                        BPF_F_CURRENT_NETNS, 0);
+    if (sk) {
+        sk_release(sk);
+        return true;
+    }
+    return false;
+}
+
 static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 					     struct bpf_sock_addr *ctx_full,
 					     const bool udp_only)
@@ -305,6 +334,9 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 #ifdef ENABLE_L7_LB
 	struct lb4_backend l7backend;
 #endif
+
+	if (is_port_listen_current_ns(ctx, ip_zero, OUT_REDIRECT_PORT))
+		return -ENXIO;
 
 	if (is_defined(ENABLE_SOCKET_LB_HOST_ONLY) && !in_hostns)
 		return -ENXIO;
