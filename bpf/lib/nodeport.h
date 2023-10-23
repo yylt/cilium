@@ -2456,7 +2456,7 @@ skip_service_lookup:
 	/* Reply from DSR packet is never seen on this node again
 	 * hence no need to track in here.
 	 */
-	if (backend_local || !nodeport_uses_dsr4(&tuple)) {
+	if (false || !nodeport_uses_dsr4(&tuple)) {
 		struct ct_state ct_state = {};
 
 		ret = ct_lazy_lookup4(get_ct_map4(&tuple), &tuple, ctx, l4_off, has_l4_header,
