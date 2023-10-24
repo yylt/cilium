@@ -5,8 +5,9 @@ package ipam
 
 import (
 	"errors"
-	"github.com/vishvananda/netlink"
 	"net"
+
+	"github.com/vishvananda/netlink"
 
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -16,6 +17,10 @@ import (
 )
 
 func configureOpenStackENIs(oldNode, newNode *ciliumv2.CiliumNode, mtuConfig MtuConfiguration) error {
+	if newNode == nil {
+		log.Warnf("############ configure openstack enis: newNode is null")
+		return nil
+	}
 	if oldNode != nil && oldNode.Status.OpenStack.ENIs != nil && newNode.Status.OpenStack.ENIs != nil {
 		log.Errorf("############ configure openstack enis: oldNode is %+v, newNode is %+v", oldNode.Status.OpenStack.ENIs, newNode.Status.OpenStack.ENIs)
 	}
@@ -41,7 +46,7 @@ func configureOpenStackENIs(oldNode, newNode *ciliumv2.CiliumNode, mtuConfig Mtu
 			log.Infof("Add address for eni %s", id)
 			addedENIByMac[eni.MAC] = eniDeviceConfig{
 				name: eni.ID,
-				ip: net.ParseIP(eni.IP),
+				ip:   net.ParseIP(eni.IP),
 			}
 
 		}
